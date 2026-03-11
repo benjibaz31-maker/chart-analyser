@@ -17,6 +17,7 @@ from io import BytesIO
 import requests
 import numpy as np
 import pandas as pd
+import yfinance as yf
 
 import matplotlib
 matplotlib.use("Agg")
@@ -30,12 +31,21 @@ import matplotlib.dates as mdates
 # ─────────────────────────────────────────────────────────────
 PAIR        = os.getenv("PAIR",        "XAU/EUR")
 GROQ_KEY    = os.getenv("GROQ_KEY",   "")
-TWELVE_KEY  = os.getenv("TWELVE_KEY", "")
 EMAIL_FROM  = os.getenv("EMAIL_FROM", "")
 EMAIL_PASS  = os.getenv("EMAIL_PASS", "")
 EMAIL_TO    = os.getenv("EMAIL_TO",   "")
 MIN_SCORE   = int(os.getenv("MIN_SCORE",  "65"))
 BALANCE     = float(os.getenv("BALANCE", "1000"))
+
+# Mapping paire → ticker Yahoo Finance
+YAHOO_SYMBOLS = {
+    "XAU/EUR": "XAUEUR=X",
+    "XAU/USD": "XAUUSD=X",
+    "XAU/GBP": "XAUGBP=X",
+    "EUR/USD": "EURUSD=X",
+    "GBP/USD": "GBPUSD=X",
+    "USD/JPY": "USDJPY=X",
+}
 
 MODEL = "meta-llama/llama-4-scout-17b-16e-instruct"
 
@@ -67,33 +77,53 @@ def is_market_open() -> bool:
 # ─────────────────────────────────────────────────────────────
 #  2. RÉCUPÉRATION DES DONNÉES — Twelve Data
 # ─────────────────────────────────────────────────────────────
-def fetch_ohlcv(symbol: str, interval: str, n: int) -> pd.DataFrame:
-    """Télécharge les bougies OHLCV depuis Twelve Data."""
-    url = "https://api.twelvedata.com/time_series"
-    params = {
-        "symbol":     symbol,
-        "interval":   interval,
-        "outputsize": n,
-        "timezone":   "UTC",
-        "apikey":     TWELVE_KEY,
-    }
-    r = requests.get(url, params=params, timeout=20)
-    r.raise_for_status()
-    data = r.json()
+def fetch_ohlcv(pair: str, interval: str, n: int) -> pd.DataFrame:
+    """
+    Télécharge les bougies OHLCV via yfinance (Yahoo Finance, 100% gratuit, sans clé API).
+    interval : "1h" ou "4h"
+    """
+    import yfinance as yf
 
-    if "values" not in data:
-        raise ValueError(f"Twelve Data error: {data.get('message','unknown')} — symbol={symbol}")
+    ticker = YAHOO_SYMBOLS.get(pair, pair.replace("/", "") + "=X")
 
-    rows = data["values"]   # newest first
-    df = pd.DataFrame(rows)
-    df = df.rename(columns={"datetime":"date"})
-    df["date"]  = pd.to_datetime(df["date"])
-    df["open"]  = df["open"].astype(float)
-    df["high"]  = df["high"].astype(float)
-    df["low"]   = df["low"].astype(float)
-    df["close"] = df["close"].astype(float)
-    df = df.sort_values("date").reset_index(drop=True)
-    return df
+    # Pour H1 : on prend 8 jours (>70 bougies H1)
+    # Pour H4 : on prend des bougies 1h sur 30j puis on resamplons en 4h (~55 bougies)
+    period     = "8d"  if interval == "1h" else "30d"
+    yf_interval = "1h"  # toujours 1h, on resample pour H4
+
+    print(f"    → Yahoo Finance : {ticker} {yf_interval} {period}")
+    data = yf.download(ticker, period=period, interval=yf_interval,
+                       auto_adjust=True, progress=False)
+
+    if data.empty:
+        raise ValueError(f"Aucune donnée Yahoo Finance pour {ticker}")
+
+    # Aplatir les colonnes si MultiIndex
+    if isinstance(data.columns, pd.MultiIndex):
+        data.columns = data.columns.get_level_values(0)
+
+    data = data.rename(columns={
+        "Open": "open", "High": "high", "Low": "low",
+        "Close": "close", "Volume": "volume"
+    })
+    data.index.name = "date"
+    data = data.reset_index()
+    data["date"] = pd.to_datetime(data["date"], utc=True)
+    data = data[["date", "open", "high", "low", "close"]].dropna()
+
+    # Pour H4 : resample H1 → H4
+    if interval == "4h":
+        data = data.set_index("date")
+        data = data.resample("4h").agg({
+            "open":  "first",
+            "high":  "max",
+            "low":   "min",
+            "close": "last",
+        }).dropna().reset_index()
+
+    data = data.sort_values("date").reset_index(drop=True)
+    data = data.tail(n).reset_index(drop=True)
+    return data
 
 # ─────────────────────────────────────────────────────────────
 #  3. CALCUL DES INDICATEURS
@@ -653,7 +683,6 @@ def main():
     # Vérification config
     missing = [k for k,v in [
         ("GROQ_KEY",   GROQ_KEY),
-        ("TWELVE_KEY", TWELVE_KEY),
         ("EMAIL_FROM", EMAIL_FROM),
         ("EMAIL_PASS", EMAIL_PASS),
         ("EMAIL_TO",   EMAIL_TO)
