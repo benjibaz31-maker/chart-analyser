@@ -77,41 +77,76 @@ def is_market_open() -> bool:
 # ─────────────────────────────────────────────────────────────
 #  2. RÉCUPÉRATION DES DONNÉES — Twelve Data
 # ─────────────────────────────────────────────────────────────
-def fetch_ohlcv(pair: str, interval: str, n: int) -> pd.DataFrame:
-    """
-    Télécharge les bougies OHLCV via yfinance (Yahoo Finance, 100% gratuit, sans clé API).
-    interval : "1h" ou "4h"
-    """
+def _download_yf(ticker: str, period: str) -> pd.DataFrame:
+    """Télécharge des bougies H1 depuis Yahoo Finance et retourne un DataFrame propre."""
     import yfinance as yf
-
-    ticker = YAHOO_SYMBOLS.get(pair, pair.replace("/", "") + "=X")
-
-    # Pour H1 : on prend 8 jours (>70 bougies H1)
-    # Pour H4 : on prend des bougies 1h sur 30j puis on resamplons en 4h (~55 bougies)
-    period     = "8d"  if interval == "1h" else "30d"
-    yf_interval = "1h"  # toujours 1h, on resample pour H4
-
-    print(f"    → Yahoo Finance : {ticker} {yf_interval} {period}")
-    data = yf.download(ticker, period=period, interval=yf_interval,
+    data = yf.download(ticker, period=period, interval="1h",
                        auto_adjust=True, progress=False)
-
     if data.empty:
         raise ValueError(f"Aucune donnée Yahoo Finance pour {ticker}")
-
-    # Aplatir les colonnes si MultiIndex
     if isinstance(data.columns, pd.MultiIndex):
         data.columns = data.columns.get_level_values(0)
-
-    data = data.rename(columns={
-        "Open": "open", "High": "high", "Low": "low",
-        "Close": "close", "Volume": "volume"
-    })
+    data = data.rename(columns={"Open":"open","High":"high","Low":"low","Close":"close"})
     data.index.name = "date"
     data = data.reset_index()
     data["date"] = pd.to_datetime(data["date"], utc=True)
-    data = data[["date", "open", "high", "low", "close"]].dropna()
+    return data[["date","open","high","low","close"]].dropna()
 
-    # Pour H4 : resample H1 → H4
+
+def fetch_ohlcv(pair: str, interval: str, n: int) -> pd.DataFrame:
+    """
+    Télécharge les bougies OHLCV via Yahoo Finance (100% gratuit, sans clé API).
+
+    Stratégie XAU/EUR :
+      - Yahoo Finance n'a pas XAUEUR=X directement
+      - On télécharge XAU/USD (GC=F) + EUR/USD (EURUSD=X)
+      - XAU/EUR = XAU/USD / EUR/USD  (bougies alignées sur timestamp)
+
+    Autres paires : ticker direct Yahoo Finance
+    """
+    import yfinance as yf
+
+    period = "8d" if interval == "1h" else "30d"
+
+    # ── Paires XAU/* → calcul croisé ──
+    if pair.startswith("XAU"):
+        quote_currency = pair.split("/")[1]  # EUR, GBP, USD...
+
+        print(f"    → XAU/USD (GC=F) + {quote_currency}/USD pour calculer {pair}")
+
+        # XAU/USD via Gold futures
+        xau_usd = _download_yf("GC=F", period)
+        xau_usd = xau_usd.set_index("date").sort_index()
+
+        if quote_currency == "USD":
+            # Pas de conversion nécessaire
+            data = xau_usd.reset_index()
+        else:
+            # Télécharge quote/USD (ex: EURUSD=X)
+            fx_ticker = f"{quote_currency}USD=X"
+            fx = _download_yf(fx_ticker, period)
+            fx = fx[["date","close"]].rename(columns={"close":"fx_close"})
+            fx = fx.set_index("date").sort_index()
+
+            # Aligne les deux séries sur les timestamps communs
+            merged = xau_usd.join(fx, how="inner")
+            if merged.empty:
+                raise ValueError(f"Impossible d'aligner XAU/USD et {fx_ticker}")
+
+            # XAU/EUR = XAU/USD ÷ EUR/USD
+            merged["open"]  = merged["open"]  / merged["fx_close"]
+            merged["high"]  = merged["high"]  / merged["fx_close"]
+            merged["low"]   = merged["low"]   / merged["fx_close"]
+            merged["close"] = merged["close"] / merged["fx_close"]
+            data = merged[["open","high","low","close"]].reset_index()
+
+    else:
+        # Paire forex standard
+        ticker = YAHOO_SYMBOLS.get(pair, pair.replace("/","") + "=X")
+        print(f"    → Yahoo Finance : {ticker}")
+        data = _download_yf(ticker, period)
+
+    # ── Resample H1 → H4 si nécessaire ──
     if interval == "4h":
         data = data.set_index("date")
         data = data.resample("4h").agg({
@@ -123,6 +158,11 @@ def fetch_ohlcv(pair: str, interval: str, n: int) -> pd.DataFrame:
 
     data = data.sort_values("date").reset_index(drop=True)
     data = data.tail(n).reset_index(drop=True)
+
+    if data.empty:
+        raise ValueError(f"DataFrame vide après traitement pour {pair} {interval}")
+
+    print(f"    ✅ {len(data)} bougies — Close={data['close'].iloc[-1]:.2f}")
     return data
 
 # ─────────────────────────────────────────────────────────────
