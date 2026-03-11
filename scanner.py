@@ -363,7 +363,8 @@ body{{margin:0;padding:0;background:#f1f5f9;font-family:'Segoe UI',Arial,sans-se
 
 def send_email(msg):
     print(f"  Envoi email a {EMAIL_TO}...")
-    with smtplib.SMTP_SSL("smtp.gmail.com",465) as s:
+    with smtplib.SMTP("smtp-relay.brevo.com", 587) as s:
+        s.starttls()
         s.login(EMAIL_FROM,EMAIL_PASS);s.send_message(msg)
     print("  Email envoye!")
 
