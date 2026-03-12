@@ -1,0 +1,20 @@
+name: Test Email SMTP
+
+on:
+  workflow_dispatch:
+
+jobs:
+  test:
+    name: "Test Email Brevo"
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: "Test SMTP"
+        env:
+          EMAIL_FROM: ${{ secrets.EMAIL_FROM }}
+          EMAIL_PASS: ${{ secrets.EMAIL_PASS }}
+          EMAIL_TO:   ${{ secrets.EMAIL_TO }}
+        run: python test_email.py
