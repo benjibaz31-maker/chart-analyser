@@ -32,6 +32,7 @@ MIN_SCORE = int(os.getenv("MIN_SCORE", "65"))
 BALANCE   = float(os.getenv("BALANCE","1000"))
 GH_TOKEN  = os.getenv("GITHUB_TOKEN","")
 GH_REPO   = os.getenv("GITHUB_REPOSITORY","")
+TEST_EMAIL= os.getenv("TEST_EMAIL","false").lower() == "true"
 MODEL     = "meta-llama/llama-4-scout-17b-16e-instruct"
 TIMEFRAMES= ["15m","1h","4h"]
 TF_LABELS = {"15m":"M15","1h":"H1","4h":"H4"}
@@ -402,13 +403,40 @@ def analyze_pair(pair,state):
     try:
         msg=build_email(consensus,charts,pair);send_email(msg)
         state=mark_sent(state,pair,sig)
+        write_signal_json(consensus,pair)
     except Exception as e:print(f"  Erreur email: {e}");traceback.print_exc()
     return state,True
+
+def send_test_email():
+    """Envoie un email de test pour vérifier la configuration SMTP."""
+    print("\n  MODE TEST EMAIL — envoi d un email de test...")
+    msg = MIMEMultipart("alternative")
+    msg["Subject"] = "✅ [TEST] ChartAnalyzer Scanner — Email OK"
+    msg["From"]    = EMAIL_FROM
+    msg["To"]      = EMAIL_TO
+    html = """<!DOCTYPE html><html><body style="font-family:Arial;padding:20px;background:#f1f5f9">
+<div style="max-width:500px;margin:auto;background:#fff;border-radius:12px;padding:24px;box-shadow:0 2px 12px rgba(0,0,0,.1)">
+<h2 style="color:#16a34a">✅ Email de test reçu !</h2>
+<p>Ton scanner ChartAnalyzer est correctement configuré.</p>
+<p>Les prochains emails de signaux BUY/SELL seront envoyés ici.</p>
+<hr style="border:1px solid #e2e8f0;margin:16px 0">
+<p style="color:#64748b;font-size:12px">ChartAnalyzer Scanner v2 — Test envoyé le """ + datetime.now(timezone.utc).strftime("%d/%m/%Y %H:%M UTC") + """</p>
+</div></body></html>"""
+    msg.attach(MIMEText(html, "html", "utf-8"))
+    try:
+        send_email(msg)
+        print("  ✅ Email de test envoyé avec succès !")
+    except Exception as e:
+        print(f"  ❌ Erreur email : {e}")
+        traceback.print_exc()
 
 def main():
     print(f"\n{'='*55}\n  ChartAnalyzer Scanner v2\n  {datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M:%S')} UTC\n{'='*55}")
     missing=[k for k,v in [("GROQ_KEY",GROQ_KEY),("EMAIL_FROM",EMAIL_FROM),("EMAIL_PASS",EMAIL_PASS),("EMAIL_TO",EMAIL_TO)] if not v]
     if missing:print(f"Variables manquantes: {', '.join(missing)}");sys.exit(1)
+    if TEST_EMAIL:
+        send_test_email()
+        sys.exit(0)
     if not is_market_open():print("Marche ferme");sys.exit(0)
     print(f"Paires: {', '.join(PAIRS)} | Score min: {MIN_SCORE} | Capital: {BALANCE}EUR")
     print(f"Anti-spam: {'actif' if GH_TOKEN else 'inactif'}")
@@ -423,3 +451,73 @@ def main():
 
 if __name__=="__main__":
     main()
+
+
+# ─────────────────────────────────────────────────────────────
+#  ÉCRITURE DU SIGNAL DANS GITHUB (pour l'EA MT5)
+# ─────────────────────────────────────────────────────────────
+def write_signal_json(consensus: dict, pair: str):
+    """Écrit signal.json dans le repo GitHub pour que l'EA MT5 puisse le lire."""
+    if not GH_TOKEN or not GH_REPO:
+        print("  ⚠ GITHUB_TOKEN manquant — signal.json non écrit")
+        return
+
+    sig   = consensus["signal"]
+    r1    = consensus["r1"]
+    sltp  = r1.get("sltp", {})
+    now   = datetime.now(timezone.utc)
+
+    # Nettoyer le nom de paire pour MT5 (XAU/EUR → XAUEUR)
+    pair_mt5 = pair.replace("/", "")
+
+    signal = {
+        "id":         now.strftime("%Y%m%d_%H%M%S") + "_" + pair_mt5 + "_" + sig,
+        "pair":       pair_mt5,
+        "action":     sig,
+        "entry":      sltp.get("entree",    "0"),
+        "sl":         sltp.get("sl",        "0"),
+        "tp":         sltp.get("tp",        "0"),
+        "sl_pips":    sltp.get("sl_pips",   "0"),
+        "tp_pips":    sltp.get("tp_pips",   "0"),
+        "lot":        float(sltp.get("lot_micro", "0.01") or "0.01"),
+        "rr":         sltp.get("rr",        "1:2"),
+        "score_h1":   consensus["score_h1"],
+        "score_h4":   consensus["score_h4"],
+        "m15_ok":     consensus["m15_ok"],
+        "partial":    consensus["partial"],
+        "created_at": now.strftime("%Y-%m-%dT%H:%M:%SZ"),
+        "expires_at": (now + timedelta(hours=4)).strftime("%Y-%m-%dT%H:%M:%SZ"),
+        "status":     "pending"
+    }
+
+    url     = f"https://api.github.com/repos/{GH_REPO}/contents/signal.json"
+    headers = {
+        "Authorization": f"token {GH_TOKEN}",
+        "Accept":        "application/vnd.github.v3+json"
+    }
+
+    # Récupérer le SHA existant si le fichier existe déjà
+    sha = None
+    try:
+        r = requests.get(url, headers=headers, timeout=10)
+        if r.status_code == 200:
+            sha = r.json().get("sha")
+    except Exception:
+        pass
+
+    content = base64.b64encode(json.dumps(signal, indent=2).encode()).decode()
+    body    = {
+        "message": f"[signal] {sig} {pair} {now.strftime('%H:%M')} UTC",
+        "content": content
+    }
+    if sha:
+        body["sha"] = sha
+
+    try:
+        r = requests.put(url, headers=headers, json=body, timeout=10)
+        if r.status_code in (200, 201):
+            print(f"  ✅ signal.json écrit dans GitHub ({sig} {pair})")
+        else:
+            print(f"  ❌ Erreur écriture signal.json : {r.status_code} {r.text[:100]}")
+    except Exception as e:
+        print(f"  ❌ Exception signal.json : {e}")
