@@ -15,31 +15,26 @@ jobs:
       contents: write
 
     steps:
-      - name: "Checkout"
-        uses: actions/checkout@v4
-
-      - name: "Setup Python 3.11"
-        uses: actions/setup-python@v5
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
         with:
           python-version: "3.11"
           cache: "pip"
-
       - name: "Installation des dependances"
         run: pip install -r requirements.txt
-
       - name: "Scan Multi-Paires"
         env:
-          PAIRS:       ${{ vars.PAIRS || 'XAU/EUR,XAU/USD' }}
-          GROQ_KEY:    ${{ secrets.GROQ_KEY }}
-          EMAIL_FROM:  ${{ secrets.EMAIL_FROM }}
-          EMAIL_PASS:  ${{ secrets.EMAIL_PASS }}
-          EMAIL_TO:    ${{ secrets.EMAIL_TO }}
-          MIN_SCORE:   ${{ vars.MIN_SCORE || '65' }}
-          BALANCE:     ${{ vars.BALANCE || '1000' }}
+          PAIRS:             ${{ vars.PAIRS || 'XAU/EUR,XAU/USD' }}
+          GROQ_KEY:          ${{ secrets.GROQ_KEY }}
+          EMAIL_FROM:        ${{ secrets.EMAIL_FROM }}
+          SMTP_LOGIN:        ${{ secrets.SMTP_LOGIN }}
+          EMAIL_PASS:        ${{ secrets.EMAIL_PASS }}
+          EMAIL_TO:          ${{ secrets.EMAIL_TO }}
+          MIN_SCORE:         ${{ vars.MIN_SCORE || '65' }}
+          BALANCE:           ${{ vars.BALANCE || '1000' }}
           GITHUB_TOKEN:      ${{ secrets.GITHUB_TOKEN }}
           GITHUB_REPOSITORY: ${{ github.repository }}
         run: python scanner.py
-
       - name: "Resume"
         if: always()
-        run: echo "Scan termine a $(date -u '+%Y-%m-%d %H:%M') UTC"
+        run: echo "Scan termine $(date -u '+%Y-%m-%d %H:%M') UTC"
