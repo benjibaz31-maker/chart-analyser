@@ -32,6 +32,7 @@ MIN_SCORE = int(os.getenv("MIN_SCORE", "65"))
 BALANCE   = float(os.getenv("BALANCE","1000"))
 GH_TOKEN  = os.getenv("GITHUB_TOKEN","")
 GH_REPO   = os.getenv("GITHUB_REPOSITORY","")
+SMTP_LOGIN= os.getenv("SMTP_LOGIN", "")
 TEST_EMAIL= os.getenv("TEST_EMAIL","false").lower() == "true"
 MODEL     = "meta-llama/llama-4-scout-17b-16e-instruct"
 TIMEFRAMES= ["15m","1h","4h"]
@@ -364,9 +365,11 @@ body{{margin:0;padding:0;background:#f1f5f9;font-family:'Segoe UI',Arial,sans-se
 
 def send_email(msg):
     print(f"  Envoi email a {EMAIL_TO}...")
+    login = SMTP_LOGIN if SMTP_LOGIN else EMAIL_FROM
     with smtplib.SMTP("smtp-relay.brevo.com", 587) as s:
         s.starttls()
-        s.login(EMAIL_FROM,EMAIL_PASS);s.send_message(msg)
+        s.login(login, EMAIL_PASS)
+        s.send_message(msg)
     print("  Email envoye!")
 
 def analyze_pair(pair,state):
