@@ -1,20 +1,14 @@
 name: ChartAnalyzer Scanner XAU/EUR
-
 on:
   schedule:
-    - cron: "0,15,30,45 * * * 1-5"
-    - cron: "5,20,35,50 * * * 1-5"
-    - cron: "10,25,40,55 * * * 1-5"
+    - cron: "0,15,30,45 * * * 1-5"   # toutes les 15 min lun-ven
   workflow_dispatch:
-
 jobs:
   scan:
-    name: "Scan Multi-Paires M15+H1+H4"
     runs-on: ubuntu-latest
     timeout-minutes: 15
     permissions:
       contents: write
-
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
@@ -36,6 +30,4 @@ jobs:
           GITHUB_TOKEN:      ${{ secrets.GITHUB_TOKEN }}
           GITHUB_REPOSITORY: ${{ github.repository }}
         run: python scanner.py
-      - name: "Resume"
-        if: always()
-        run: echo "Scan termine $(date -u '+%Y-%m-%d %H:%M') UTC"
+```
