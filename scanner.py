@@ -5,6 +5,7 @@ Multi-paires + M15+H1+H4 + Anti-spam + Graphiques annotés SL/TP
 """
 
 import os, sys, json, base64, smtplib, time, traceback, re
+from xml.etree import ElementTree as ET
 from datetime import datetime, timezone, timedelta
 from email.mime.multipart import MIMEMultipart
 from email.mime.text import MIMEText
@@ -82,6 +83,65 @@ def mark_sent(state,pair,signal):
     state[k]={"signal":signal,"sent_at":datetime.now(timezone.utc).strftime("%H:%M UTC")}
     cutoff=(datetime.now(timezone.utc)-timedelta(days=14)).strftime("%Y-%m-%d")
     return {k:v for k,v in state.items() if k.split("_")[-1]>=cutoff}
+
+
+# ─── Filtre News / Calendrier Économique ─────────────────────────
+NEWS_PAIRS_MAP = {
+    "XAU/EUR": ["USD","EUR","XAU"],
+    "XAU/USD": ["USD","XAU"],
+    "EUR/USD": ["USD","EUR"],
+    "GBP/USD": ["USD","GBP"],
+}
+
+def check_high_impact_news(pair, window_minutes=120):
+    """
+    Vérifie s'il y a une news haute importance dans les N prochaines minutes.
+    Source: ForexFactory RSS (gratuit, pas de clé API).
+    Retourne (True, description) si news dangereuse, (False, "") sinon.
+    """
+    currencies = NEWS_PAIRS_MAP.get(pair, [])
+    now = datetime.now(timezone.utc)
+    try:
+        url = "https://nfs.faireconomy.media/ff_calendar_thisweek.xml"
+        r = requests.get(url, timeout=10, headers={"User-Agent": "Mozilla/5.0"})
+        if r.status_code != 200:
+            return False, ""
+        root = ET.fromstring(r.content)
+        for event in root.findall("event"):
+            try:
+                currency = (event.findtext("country") or "").upper()
+                impact   = (event.findtext("impact") or "").lower()
+                title    = event.findtext("title") or ""
+                date_str = event.findtext("date") or ""
+                time_str = event.findtext("time") or ""
+                if impact not in ("high", "medium"):
+                    continue
+                if currency not in currencies and "XAU" not in currencies:
+                    continue
+                # Parser la date/heure
+                try:
+                    dt_str = f"{date_str} {time_str}".strip()
+                    event_dt = None
+                    for fmt in ["%m-%d-%Y %I:%M%p", "%Y-%m-%d %H:%M", "%m/%d/%Y %I:%M%p"]:
+                        try:
+                            event_dt = datetime.strptime(dt_str, fmt).replace(tzinfo=timezone.utc)
+                            break
+                        except:
+                            continue
+                    if event_dt is None:
+                        continue
+                    delta = (event_dt - now).total_seconds() / 60
+                    if -30 <= delta <= window_minutes:
+                        desc = f"{currency} {title} dans {int(delta)}min ({impact.upper()})"
+                        print(f"  ⚠ NEWS DETECTEE: {desc}")
+                        return True, desc
+                except Exception:
+                    continue
+            except Exception:
+                continue
+    except Exception as e:
+        print(f"  Calendrier éco non disponible: {e}")
+    return False, ""
 
 def is_market_open():
     now=datetime.now(timezone.utc);wd=now.weekday();h=now.hour
@@ -393,10 +453,55 @@ body{{margin:0;padding:0;background:#f1f5f9;font-family:'Segoe UI',Arial,sans-se
 </div>
 <div class="footer">ChartAnalyzer Scanner v2 · {pair} · {now_str} · M15={r15.get('signal','?')} H1={sig}({sc1}) H4={r4.get('signal','?')}({sc4}) · Seuil={MIN_SCORE}/100</div>
 </div></body></html>"""
+    # ── Email mobile-friendly (résumé en haut) ──
+    mobile_html=f"""<!DOCTYPE html><html><body style="font-family:Arial;padding:16px;background:#f1f5f9">
+<div style="max-width:480px;margin:auto;background:{col};border-radius:16px;padding:24px;color:#fff;text-align:center">
+  <div style="font-size:3rem;font-weight:900;letter-spacing:2px">{ico} {sig} {arrow}</div>
+  <div style="font-size:1.4rem;font-weight:700;margin:8px 0">{pair}</div>
+  <div style="font-size:.9rem;opacity:.8">{now_str} · Score H1={sc1}/100 H4={sc4}/100</div>
+</div>
+<div style="max-width:480px;margin:12px auto;background:#fff;border-radius:16px;padding:20px;box-shadow:0 2px 12px rgba(0,0,0,.1)">
+  <div style="font-size:1rem;font-weight:900;color:#1e293b;margin-bottom:16px;text-align:center">
+    📲 COPIE CES VALEURS DANS MT5
+  </div>
+  <table style="width:100%;border-collapse:collapse;font-size:1rem">
+    <tr style="border-bottom:1px solid #f1f5f9">
+      <td style="padding:12px 8px;color:#64748b;font-weight:600">📥 ENTRÉE</td>
+      <td style="padding:12px 8px;font-weight:900;font-size:1.3rem;color:#1e293b;text-align:right">{entree}</td>
+    </tr>
+    <tr style="border-bottom:1px solid #f1f5f9;background:#fef2f2">
+      <td style="padding:12px 8px;color:#dc2626;font-weight:600">🛑 STOP LOSS</td>
+      <td style="padding:12px 8px;font-weight:900;font-size:1.3rem;color:#dc2626;text-align:right">{sl}</td>
+    </tr>
+    <tr style="border-bottom:1px solid #f1f5f9;background:#f0fdf4">
+      <td style="padding:12px 8px;color:#16a34a;font-weight:600">🎯 TAKE PROFIT</td>
+      <td style="padding:12px 8px;font-weight:900;font-size:1.3rem;color:#16a34a;text-align:right">{tp}</td>
+    </tr>
+    <tr style="border-bottom:1px solid #f1f5f9">
+      <td style="padding:12px 8px;color:#7c3aed;font-weight:600">📦 LOT</td>
+      <td style="padding:12px 8px;font-weight:900;font-size:1.3rem;color:#7c3aed;text-align:right">{lot}</td>
+    </tr>
+    <tr>
+      <td style="padding:12px 8px;color:#64748b;font-weight:600">⚖️ RATIO</td>
+      <td style="padding:12px 8px;font-weight:900;font-size:1.3rem;color:#1e293b;text-align:right">{rr}</td>
+    </tr>
+  </table>
+  <div style="margin-top:16px;padding:12px;background:#fffbeb;border-radius:10px;font-size:.8rem;color:#92400e;text-align:center">
+    ⚠️ Invalide si prix dépasse <b>{inv}</b>
+  </div>
+  <div style="margin-top:10px;padding:10px;background:#eff6ff;border-radius:10px;font-size:.75rem;color:#1e40af;text-align:center">
+    MT5 Mobile → {pair.replace('//','')} → Nouvel Ordre → Remplis les valeurs ci-dessus
+  </div>
+</div>
+</body></html>"""
+
     msg=MIMEMultipart("related")
     msg["Subject"]=f"{ico} [{sig}] {pair} — {sc1}/100 · {'M15+H1+H4' if m15_ok else 'H1+H4'} · {datetime.now(timezone.utc).strftime('%H:%M')} UTC"
     msg["From"]=EMAIL_FROM;msg["To"]=EMAIL_TO
-    alt=MIMEMultipart("alternative");alt.attach(MIMEText(html,"html","utf-8"));msg.attach(alt)
+    alt=MIMEMultipart("alternative")
+    alt.attach(MIMEText(mobile_html,"html","utf-8"))  # Version mobile en premier
+    alt.attach(MIMEText(html,"html","utf-8"))          # Version complète en second
+    msg.attach(alt)
     for tf,cid in [("15m","chart_m15"),("1h","chart_h1"),("4h","chart_h4")]:
         if tf in charts:
             img=MIMEImage(charts[tf],_subtype="png")
@@ -438,6 +543,12 @@ def analyze_pair(pair,state):
     sig=consensus["signal"]
     print(f"  SIGNAL: {sig} H1={consensus['score_h1']} H4={consensus['score_h4']}")
     if already_signaled(state,pair,sig):return state,False
+    # Filtre news haute importance
+    has_news, news_desc = check_high_impact_news(pair, window_minutes=120)
+    if has_news:
+        print(f"  ⛔ Signal bloqué par news: {news_desc}")
+        print(f"  Signal annulé — réessai après la news")
+        return state, False
     print(f"\n  Graphiques annotes SL/TP...")
     charts={}
     for tf in TIMEFRAMES:
