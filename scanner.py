@@ -200,22 +200,62 @@ def generate_chart(df,pair,tf,sltp=None,signal=""):
 
 def call_groq(img_bytes,df,pair,tf):
     last=df.iloc[-1];rsi=df["rsi"].iloc[-1]
-    macd_col="vert" if df["macd_hist"].iloc[-1]>=0 else "rouge"
-    macd_dir="haussier" if df["macd_hist"].iloc[-1]>df["macd_hist"].iloc[-2] else "baissier"
+    macd_hist_last=df["macd_hist"].iloc[-1]
+    macd_hist_prev=df["macd_hist"].iloc[-2]
+    macd_hist_prev2=df["macd_hist"].iloc[-3] if len(df)>2 else macd_hist_prev
+    macd_col="vert" if macd_hist_last>=0 else "rouge"
+    macd_dir="haussier" if macd_hist_last>macd_hist_prev else "baissier"
+    macd_accel="accelere" if abs(macd_hist_last)>abs(macd_hist_prev)>abs(macd_hist_prev2) else "stable"
     ma50=df["ma50"].iloc[-1];above=last["close"]>ma50
+    # Distance prix/MA50 en %
+    dist_ma50=abs(last["close"]-ma50)/ma50*100 if ma50>0 else 0
+    # Pente RSI sur 3 bougies
+    rsi_slope=df["rsi"].iloc[-1]-df["rsi"].iloc[-4] if len(df)>4 else 0
+    # Bougies consécutives dans la direction
+    closes=df["close"].values
+    bull_count=sum(1 for i in range(len(closes)-1,max(len(closes)-6,-1),-1) if closes[i]>closes[i-1])
+    bear_count=sum(1 for i in range(len(closes)-1,max(len(closes)-6,-1),-1) if closes[i]<closes[i-1])
     is_xau=pair.startswith("XAU");risk=BALANCE*0.01;b64=base64.b64encode(img_bytes).decode()
     xau_r=f"""
-REGLES XAU: sl_pips/tp_pips=DOLLARS. SL M15:5-12$ H1:10-20$ H4:20-40$.
-Prix 2 decimales (ex:4412.30). INTERDIT prix<100. lot_micro=({risk:.2f}/(sl_pips*100))""" if is_xau else f"""
-REGLES FOREX: sl_pips/tp_pips=PIPS. SL M15:15-25p H1:30-50p H4:50-100p.
-lot_micro=({risk:.2f}/(sl_pips*10))"""
-    prompt=f"""Analyste technique RSI+MACD+MA50. Paire {pair} {TF_LABELS[tf]}.
-BUY: RSI<50 montant + MACD rouge->vert + prix>MA50
-SELL: RSI>50 descendant + MACD vert->rouge + prix<MA50
-WAIT: <2 conditions
-Donnees: Close={last['close']:.2f} RSI={rsi:.2f} MACD={macd_col} {macd_dir} MA50={ma50:.2f} Prix={'AU-DESSUS' if above else 'EN-DESSOUS'}{xau_r}
-JSON UNIQUEMENT sans markdown:
-{{"signal":"BUY|SELL|WAIT","score":0-100,"confiance":{{"niveau":"faible|moyen|eleve","raison":"..."}},"tendance":{{"direction":"haussiere|baissiere|laterale","force":"faible|moderee|forte","description":"..."}},"rsi":{{"valeur":{rsi:.2f},"zone":"survente|neutre|surachat","tendance":"montant|descendant|stable"}},"macd":{{"etat":"haussier|baissier|neutre","bougies_depuis":0}},"ma50":{{"position":"au-dessus|en-dessous|proche","condition":true}},"supports_resistances":{{"resistances":["R1: niveau","R2: niveau"],"supports":["S1: niveau","S2: niveau"]}},"sltp":{{"entree":"valeur","sl":"valeur","sl_pips":"valeur","tp":"valeur","tp_pips":"valeur","rr":"1:2","lot_micro":"valeur"}},"forces":"Force1\\nForce2","faiblesses":"Risque1\\nRisque2","analyse":"3 phrases","scenario_alternatif":"niveau invalidation","probabilite_signal":"XX% justification"}}"""
+REGLES XAU: sl_pips/tp_pips=DOLLARS. SL M15:8-15$ H1:15-25$ H4:25-45$.
+Prix 2 decimales (ex:4412.30). INTERDIT prix<100. lot_micro=({risk:.2f}/(sl_pips*100))
+TP minimum = SL x 2 (ratio 1:2 minimum obligatoire)""" if is_xau else f"""
+REGLES FOREX: sl_pips/tp_pips=PIPS. SL M15:15-25p H1:30-50p H4:60-100p.
+lot_micro=({risk:.2f}/(sl_pips*10))
+TP minimum = SL x 2 (ratio 1:2 minimum obligatoire)"""
+    prompt=f"""Tu es un trader professionnel avec 20 ans d experience. Analyse {pair} {TF_LABELS[tf]} avec une PRECISION MAXIMALE.
+
+DONNEES TECHNIQUES:
+- Close={last['close']:.2f} | MA50={ma50:.2f} | Prix={'AU-DESSUS' if above else 'EN-DESSOUS'} MA50 ({dist_ma50:.1f}%)
+- RSI={rsi:.2f} | Pente RSI 4 bougies={rsi_slope:+.1f} | Zone={'SURVENTE<30' if rsi<30 else 'SURACHAT>70' if rsi>70 else 'NEUTRE 30-70'}
+- MACD histogramme={macd_col} {macd_dir} {macd_accel}
+- Momentum: {bull_count} bougies haussières / {bear_count} baissières sur 5 dernières
+
+CRITERES STRICTS BUY (besoin des 4):
+1. RSI < 45 ET pente RSI positive (montant)
+2. MACD histogramme vert ET accelere OU vient de croiser
+3. Prix AU-DESSUS de la MA50
+4. Au moins 3 bougies haussières sur les 5 dernières
+
+CRITERES STRICTS SELL (besoin des 4):
+1. RSI > 55 ET pente RSI negative (descendant)
+2. MACD histogramme rouge ET accelere OU vient de croiser
+3. Prix EN-DESSOUS de la MA50
+4. Au moins 3 bougies baissières sur les 5 dernières
+
+WAIT si moins de 3 critères remplis ou marché en range.
+
+SCORING (sois STRICT, penalise le moindre doute):
+- 85-100: Tous critères parfaits, tendance forte, momentum clair
+- 70-84: 4 critères OK mais 1 légèrement limite
+- 55-69: 3 critères OK, signal présent mais risqué
+- <55: WAIT obligatoire
+
+IMPORTANT: Mieux vaut dire WAIT que générer un mauvais signal. La précision prime sur la quantité.
+{xau_r}
+
+Réponds UNIQUEMENT en JSON valide sans markdown:
+{{"signal":"BUY|SELL|WAIT","score":0-100,"confiance":{{"niveau":"faible|moyen|eleve","raison":"..."}},"tendance":{{"direction":"haussiere|baissiere|laterale","force":"faible|moderee|forte","description":"..."}},"rsi":{{"valeur":{rsi:.2f},"zone":"survente|neutre|surachat","tendance":"montant|descendant|stable"}},"macd":{{"etat":"haussier|baissier|neutre","bougies_depuis":0}},"ma50":{{"position":"au-dessus|en-dessous|proche","condition":true}},"supports_resistances":{{"resistances":["R1: niveau","R2: niveau"],"supports":["S1: niveau","S2: niveau"]}},"sltp":{{"entree":"valeur","sl":"valeur","sl_pips":"valeur","tp":"valeur","tp_pips":"valeur","rr":"1:2","lot_micro":"valeur"}},"forces":"Force1\\nForce2","faiblesses":"Risque1\\nRisque2","analyse":"3 phrases precises","scenario_alternatif":"niveau exact invalidation","probabilite_signal":"XX% justification precise"}}"""
     payload={"model":MODEL,"max_tokens":1100,"messages":[{"role":"user","content":[{"type":"text","text":prompt},{"type":"image_url","image_url":{"url":f"data:image/png;base64,{b64}"}}]}]}
     hdrs={"Authorization":f"Bearer {GROQ_KEY}","Content-Type":"application/json"}
     for attempt in range(3):
@@ -233,12 +273,14 @@ JSON UNIQUEMENT sans markdown:
 def evaluate_consensus(results):
     r15=results.get("15m",{});r1=results.get("1h",{});r4=results.get("4h",{})
     s15=r15.get("signal","WAIT");s1=r1.get("signal","WAIT");s4=r4.get("signal","WAIT")
-    sc1=int(r1.get("score",0));sc4=int(r4.get("score",0))
-    print(f"  M15={s15} | H1={s1}({sc1}) | H4={s4}({sc4})")
-    if s1==s4 and s1 in ("BUY","SELL") and sc1>=MIN_SCORE:
-        return {"signal":s1,"score_h1":sc1,"score_h4":sc4,"m15_ok":s15==s1,"partial":False,"r15":r15,"r1":r1,"r4":r4}
-    if s1 in ("BUY","SELL") and s4 in ("WAIT",s1) and sc1>=MIN_SCORE+10:
-        return {"signal":s1,"score_h1":sc1,"score_h4":sc4,"m15_ok":s15==s1,"partial":True,"r15":r15,"r1":r1,"r4":r4}
+    sc1=int(r1.get("score",0));sc4=int(r4.get("score",0));sc15=int(r15.get("score",0))
+    print(f"  M15={s15}({sc15}) | H1={s1}({sc1}) | H4={s4}({sc4})")
+    # Signal FORT : H1 + H4 alignes, scores eleves
+    if s1==s4 and s1 in ("BUY","SELL") and sc1>=MIN_SCORE and sc4>=MIN_SCORE:
+        m15_ok=(s15==s1 and sc15>=50)
+        print(f"  SIGNAL FORT {'+ M15 confirme' if m15_ok else '(M15 neutre)'}")
+        return {"signal":s1,"score_h1":sc1,"score_h4":sc4,"m15_ok":m15_ok,"partial":False,"r15":r15,"r1":r1,"r4":r4}
+    print(f"  Pas de signal (H1={s1}/{sc1} H4={s4}/{sc4})")
     return None
 
 def build_email(consensus,charts,pair):
