@@ -85,6 +85,77 @@ def mark_sent(state,pair,signal):
     return {k:v for k,v in state.items() if k.split("_")[-1]>=cutoff}
 
 
+
+# ─────────────────────────────────────────────────────────────
+#  FIBONACCI + ATR
+# ─────────────────────────────────────────────────────────────
+def calc_fibonacci_levels(df, action, lookback=50):
+    """
+    Calcule les niveaux Fibonacci sur les N dernières bougies.
+    Retourne les niveaux clés pour SL et TP.
+    """
+    recent = df.tail(lookback)
+    swing_high = recent["high"].max()
+    swing_low  = recent["low"].min()
+    diff = swing_high - swing_low
+    if diff == 0: return {}
+    levels = {
+        "0.0":   swing_low,
+        "23.6":  swing_low + 0.236 * diff,
+        "38.2":  swing_low + 0.382 * diff,
+        "50.0":  swing_low + 0.500 * diff,
+        "61.8":  swing_low + 0.618 * diff,
+        "78.6":  swing_low + 0.786 * diff,
+        "100.0": swing_high,
+        "127.2": swing_low + 1.272 * diff,
+        "161.8": swing_low + 1.618 * diff,
+    }
+    close = df["close"].iloc[-1]
+    if action == "BUY":
+        # SL = niveau Fib sous le prix actuel (38.2% ou 50%)
+        sl_candidates = [v for k,v in levels.items() if v < close]
+        sl = max(sl_candidates) if sl_candidates else close - diff*0.382
+        # TP = niveau Fib au-dessus (61.8%, 100%, 127.2%)
+        tp_candidates = [v for k,v in levels.items() if v > close]
+        tp = min(tp_candidates) if tp_candidates else close + diff*0.618
+    else:
+        # SL = niveau Fib au-dessus
+        sl_candidates = [v for k,v in levels.items() if v > close]
+        sl = min(sl_candidates) if sl_candidates else close + diff*0.382
+        # TP = niveau Fib en-dessous
+        tp_candidates = [v for k,v in levels.items() if v < close]
+        tp = max(tp_candidates) if tp_candidates else close - diff*0.618
+    return {"sl": sl, "tp": tp, "swing_high": swing_high, "swing_low": swing_low, "levels": levels}
+
+def calc_lot_atr(df, balance, risk_pct, pair, action, fib_sl):
+    """
+    Calcule la taille du lot selon l'ATR et le niveau Fibonacci SL.
+    Plus la volatilite est haute -> lot plus petit.
+    """
+    is_xau = pair.startswith("XAU")
+    atr = df["atr"].iloc[-1] if "atr" in df.columns else 0
+    close = df["close"].iloc[-1]
+    risk_amt = balance * risk_pct  # 1% du capital
+
+    if fib_sl and fib_sl > 0:
+        sl_dist = abs(close - fib_sl)
+    else:
+        # Fallback: SL = 1.5x ATR
+        sl_dist = atr * 1.5 if atr > 0 else (close * 0.003)
+
+    if sl_dist == 0: return 0.01
+
+    if is_xau:
+        # XAU: 1 lot = 100 oz, valeur pip = 1$
+        lot = risk_amt / (sl_dist * 100)
+    else:
+        # Forex: 1 lot = 100 000 unités
+        lot = risk_amt / (sl_dist * 10000)
+
+    # Arrondir et limiter
+    lot = round(max(0.01, min(1.0, lot)), 2)
+    return lot
+
 # ─── Filtre News / Calendrier Économique ─────────────────────────
 NEWS_PAIRS_MAP = {
     "XAU/EUR": ["USD","EUR","XAU"],
@@ -201,6 +272,11 @@ def compute_indicators(df):
     df["bb_upper"]=df["bb_mid"]+2*df["bb_std"]
     df["bb_lower"]=df["bb_mid"]-2*df["bb_std"]
     df["bb_pct"]=(c-df["bb_lower"])/(df["bb_upper"]-df["bb_lower"])  # 0=bas 1=haut
+    # ATR (Average True Range) — mesure la volatilite
+    high=df["high"];low=df["low"]
+    tr=pd.concat([high-low,(high-c.shift()).abs(),(low-c.shift()).abs()],axis=1).max(axis=1)
+    df["atr"]=tr.rolling(14).mean()
+    df["atr_pct"]=df["atr"]/c*100  # ATR en % du prix
     return df
 
 def _parse_price(s):
@@ -576,8 +652,27 @@ def analyze_pair(pair,state):
     has_news, news_desc = check_high_impact_news(pair, window_minutes=120)
     if has_news:
         print(f"  ⛔ Signal bloqué par news: {news_desc}")
-        print(f"  Signal annulé — réessai après la news")
         return state, False
+    # ── Fibonacci + ATR sur H1 ──
+    try:
+        df_h1=fetch_ohlcv(pair,"1h",CANDLES["1h"]);df_h1=compute_indicators(df_h1)
+        fib=calc_fibonacci_levels(df_h1, sig, lookback=50)
+        atr=df_h1["atr"].iloc[-1] if "atr" in df_h1.columns else 0
+        lot_atr=calc_lot_atr(df_h1, BALANCE, 0.01, pair, sig, fib.get("sl",0))
+        print(f"  Fibonacci SL={fib.get('sl',0):.2f} TP={fib.get('tp',0):.2f}")
+        print(f"  ATR={atr:.2f} | Lot ATR={lot_atr}")
+        # Enrichir sltp_h1 avec Fibonacci + ATR
+        sltp_h1["sl_fib"]  = str(round(fib.get("sl",0), 2))
+        sltp_h1["tp_fib"]  = str(round(fib.get("tp",0), 2))
+        sltp_h1["lot_atr"] = str(lot_atr)
+        sltp_h1["atr"]     = str(round(atr, 2))
+        sltp_h1["swing_high"] = str(round(fib.get("swing_high",0), 2))
+        sltp_h1["swing_low"]  = str(round(fib.get("swing_low",0), 2))
+        # Mettre à jour le lot dans consensus avec ATR
+        sltp_h1["lot_micro"] = str(lot_atr)
+        consensus["r1"]["sltp"] = sltp_h1
+    except Exception as e:
+        print(f"  Fibonacci/ATR erreur: {e}")
     print(f"\n  Graphiques annotes SL/TP...")
     charts={}
     for tf in TIMEFRAMES:
