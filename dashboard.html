@@ -1,0 +1,211 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>ChartAnalyzer Dashboard</title>
+<style>
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body { font-family: 'Segoe UI', Arial, sans-serif; background: #0f172a; color: #e2e8f0; min-height: 100vh; }
+  .header { background: linear-gradient(135deg, #1e293b, #0f172a); padding: 20px; border-bottom: 1px solid #1e293b; }
+  .header h1 { font-size: 1.5rem; font-weight: 900; color: #f8fafc; }
+  .header p  { font-size: .8rem; color: #64748b; margin-top: 4px; }
+  .live { display: inline-block; width: 8px; height: 8px; background: #22c55e; border-radius: 50%; margin-right: 6px; animation: pulse 2s infinite; }
+  @keyframes pulse { 0%,100%{opacity:1} 50%{opacity:.3} }
+  .container { max-width: 900px; margin: 0 auto; padding: 20px 16px; }
+  .grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(160px, 1fr)); gap: 12px; margin-bottom: 24px; }
+  .card { background: #1e293b; border-radius: 14px; padding: 16px; border: 1px solid #334155; }
+  .card-lbl { font-size: .65rem; color: #64748b; text-transform: uppercase; letter-spacing: .08em; margin-bottom: 6px; }
+  .card-val { font-size: 1.8rem; font-weight: 900; }
+  .card-sub { font-size: .7rem; color: #64748b; margin-top: 4px; }
+  .green { color: #22c55e; } .red { color: #ef4444; } .blue { color: #3b82f6; } .purple { color: #a855f7; }
+  .section-title { font-size: .75rem; font-weight: 700; color: #64748b; text-transform: uppercase; letter-spacing: .1em; margin-bottom: 12px; padding-bottom: 8px; border-bottom: 1px solid #1e293b; }
+  .signal-card { background: #1e293b; border-radius: 12px; padding: 16px; margin-bottom: 10px; border: 1px solid #334155; display: flex; align-items: center; gap: 14px; }
+  .sig-badge { padding: 6px 14px; border-radius: 20px; font-size: .8rem; font-weight: 900; min-width: 70px; text-align: center; }
+  .sig-buy { background: #1d4ed8; color: #fff; }
+  .sig-sell { background: #dc2626; color: #fff; }
+  .sig-info { flex: 1; }
+  .sig-pair { font-size: 1rem; font-weight: 800; color: #f8fafc; }
+  .sig-meta { font-size: .72rem; color: #64748b; margin-top: 3px; }
+  .sig-scores { display: flex; gap: 8px; margin-top: 6px; }
+  .score-pill { padding: 2px 8px; border-radius: 8px; font-size: .68rem; font-weight: 700; background: #0f172a; color: #94a3b8; }
+  .sig-levels { text-align: right; }
+  .sig-entry { font-size: .9rem; font-weight: 800; color: #f8fafc; }
+  .sig-sl { font-size: .72rem; color: #ef4444; }
+  .sig-tp { font-size: .72rem; color: #22c55e; }
+  .empty { text-align: center; padding: 40px; color: #475569; font-size: .9rem; }
+  .refresh-btn { background: #2563eb; color: #fff; border: none; padding: 8px 18px; border-radius: 8px; font-size: .8rem; cursor: pointer; float: right; margin-top: -4px; }
+  .refresh-btn:hover { background: #1d4ed8; }
+  .bar-wrap { background: #0f172a; border-radius: 6px; height: 8px; overflow: hidden; margin-top: 8px; }
+  .bar-fill { height: 100%; border-radius: 6px; transition: width .5s; }
+  .last-update { font-size: .65rem; color: #475569; text-align: center; margin-top: 20px; padding-top: 16px; border-top: 1px solid #1e293b; }
+  .pair-stat { background: #1e293b; border-radius: 10px; padding: 12px; margin-bottom: 8px; border: 1px solid #334155; }
+  .pair-name { font-size: .85rem; font-weight: 700; color: #f8fafc; }
+  .pair-count { font-size: .72rem; color: #64748b; }
+</style>
+</head>
+<body>
+<div class="header">
+  <div style="max-width:900px;margin:0 auto;display:flex;justify-content:space-between;align-items:center">
+    <div>
+      <h1>🤖 <span class="live"></span>ChartAnalyzer Dashboard</h1>
+      <p>Signaux IA en temps réel · XAU/EUR · XAU/USD · Mise à jour toutes les 15 min</p>
+    </div>
+    <button class="refresh-btn" onclick="loadData()">🔄 Actualiser</button>
+  </div>
+</div>
+
+<div class="container">
+  <!-- KPIs -->
+  <div class="grid" id="kpis">
+    <div class="card"><div class="card-lbl">Signaux total</div><div class="card-val blue" id="k-total">—</div><div class="card-sub">Toutes paires</div></div>
+    <div class="card"><div class="card-lbl">Cette semaine</div><div class="card-val purple" id="k-week">—</div><div class="card-sub">7 derniers jours</div></div>
+    <div class="card"><div class="card-lbl">BUY</div><div class="card-val green" id="k-buy">—</div><div class="card-sub">Signaux haussiers</div></div>
+    <div class="card"><div class="card-lbl">SELL</div><div class="card-val red" id="k-sell">—</div><div class="card-sub">Signaux baissiers</div></div>
+    <div class="card"><div class="card-lbl">Score moyen H1</div><div class="card-val blue" id="k-score">—</div><div class="card-sub">Sur tous les signaux</div></div>
+  </div>
+
+  <!-- Signal actuel -->
+  <div style="margin-bottom:24px">
+    <div class="section-title">🔴 Signal en cours</div>
+    <div id="current-signal"><div class="empty">Chargement...</div></div>
+  </div>
+
+  <!-- Historique -->
+  <div style="margin-bottom:24px">
+    <div class="section-title">📋 Historique des signaux (20 derniers)</div>
+    <div id="history-list"><div class="empty">Chargement...</div></div>
+  </div>
+
+  <!-- Stats par paire -->
+  <div>
+    <div class="section-title">📊 Stats par paire</div>
+    <div id="pair-stats"><div class="empty">Chargement...</div></div>
+  </div>
+
+  <div class="last-update" id="last-update">Dernière mise à jour : —</div>
+</div>
+
+<script>
+const GITHUB_USER = "benjibaz31-maker";
+const GITHUB_REPO = "chart-analyser";
+const RAW = `https://raw.githubusercontent.com/${GITHUB_USER}/${GITHUB_REPO}/main`;
+
+async function fetchJSON(path) {
+  try {
+    const r = await fetch(`${RAW}/${path}?t=${Date.now()}`);
+    if (!r.ok) return null;
+    return await r.json();
+  } catch { return null; }
+}
+
+function formatDate(d, t) {
+  return `${d || ""} ${t || ""}`.trim();
+}
+
+async function loadData() {
+  // Signal actuel
+  const signal = await fetchJSON("signal.json");
+  const history = await fetchJSON("signals_history.json") || [];
+
+  // Signal actuel
+  const curEl = document.getElementById("current-signal");
+  if (signal && signal.status === "pending") {
+    const isBuy = signal.action === "BUY";
+    curEl.innerHTML = `
+      <div class="signal-card" style="border-color:${isBuy?'#1d4ed8':'#dc2626'}">
+        <div class="sig-badge ${isBuy?'sig-buy':'sig-sell'}">${isBuy?'▲ BUY':'▼ SELL'}</div>
+        <div class="sig-info">
+          <div class="sig-pair">${signal.pair || "—"}</div>
+          <div class="sig-meta">${signal.created_at || ""} · RR ${signal.rr || "1:2"} · Lot ${signal.lot || "0.01"}</div>
+          <div class="sig-scores">
+            <span class="score-pill">H1: ${signal.score_h1}/100</span>
+            <span class="score-pill">H4: ${signal.score_h4}/100</span>
+          </div>
+        </div>
+        <div class="sig-levels">
+          <div class="sig-entry">📥 ${signal.entry}</div>
+          <div class="sig-sl">🛑 SL: ${signal.sl}</div>
+          <div class="sig-tp">🎯 TP: ${signal.tp}</div>
+        </div>
+      </div>`;
+  } else {
+    curEl.innerHTML = `<div class="empty">⏳ Aucun signal en attente — scanner actif toutes les 15 min</div>`;
+  }
+
+  // Stats globales
+  const now = new Date();
+  const weekAgo = new Date(now - 7*24*60*60*1000).toISOString().slice(0,10);
+  const weekSignals = history.filter(s => (s.date||"") >= weekAgo);
+  const buys  = history.filter(s => s.signal === "BUY").length;
+  const sells = history.filter(s => s.signal === "SELL").length;
+  const avgScore = history.length > 0
+    ? Math.round(history.reduce((a,s) => a + (parseInt(s.score_h1)||0), 0) / history.length)
+    : 0;
+
+  document.getElementById("k-total").textContent = history.length;
+  document.getElementById("k-week").textContent  = weekSignals.length;
+  document.getElementById("k-buy").textContent   = buys;
+  document.getElementById("k-sell").textContent  = sells;
+  document.getElementById("k-score").textContent = avgScore + "/100";
+
+  // Historique
+  const histEl = document.getElementById("history-list");
+  if (history.length === 0) {
+    histEl.innerHTML = `<div class="empty">Aucun signal dans l'historique</div>`;
+  } else {
+    const last20 = [...history].reverse().slice(0, 20);
+    histEl.innerHTML = last20.map(s => {
+      const isBuy = s.signal === "BUY";
+      const score = parseInt(s.score_h1) || 0;
+      const barColor = score >= 75 ? "#22c55e" : score >= 65 ? "#f59e0b" : "#ef4444";
+      return `
+        <div class="signal-card">
+          <div class="sig-badge ${isBuy?'sig-buy':'sig-sell'}" style="font-size:.72rem">${isBuy?'▲ BUY':'▼ SELL'}</div>
+          <div class="sig-info">
+            <div class="sig-pair" style="font-size:.9rem">${s.pair||"—"}</div>
+            <div class="sig-meta">${formatDate(s.date, s.time)}</div>
+            <div class="bar-wrap"><div class="bar-fill" style="width:${score}%;background:${barColor}"></div></div>
+          </div>
+          <div class="sig-levels">
+            <div class="sig-entry" style="font-size:.8rem">📥 ${s.entry||"—"}</div>
+            <div class="sig-sl">🛑 ${s.sl||"—"}</div>
+            <div class="sig-tp">🎯 ${s.tp||"—"}</div>
+            <div style="font-size:.65rem;color:#64748b;margin-top:3px">H1=${s.score_h1} H4=${s.score_h4}</div>
+          </div>
+        </div>`;
+    }).join("");
+  }
+
+  // Stats par paire
+  const pairEl = document.getElementById("pair-stats");
+  const pairMap = {};
+  history.forEach(s => {
+    if (!pairMap[s.pair]) pairMap[s.pair] = {buy:0, sell:0, total:0};
+    pairMap[s.pair].total++;
+    if (s.signal === "BUY") pairMap[s.pair].buy++;
+    else pairMap[s.pair].sell++;
+  });
+  pairEl.innerHTML = Object.entries(pairMap).length === 0
+    ? `<div class="empty">Aucune donnée</div>`
+    : Object.entries(pairMap).sort((a,b) => b[1].total - a[1].total).map(([pair, d]) => `
+        <div class="pair-stat" style="display:flex;justify-content:space-between;align-items:center">
+          <div>
+            <div class="pair-name">${pair}</div>
+            <div class="pair-count">${d.total} signaux total</div>
+          </div>
+          <div style="display:flex;gap:8px">
+            <span style="background:#1d4ed8;color:#fff;padding:3px 10px;border-radius:8px;font-size:.72rem;font-weight:700">▲ ${d.buy}</span>
+            <span style="background:#dc2626;color:#fff;padding:3px 10px;border-radius:8px;font-size:.72rem;font-weight:700">▼ ${d.sell}</span>
+          </div>
+        </div>`).join("");
+
+  document.getElementById("last-update").textContent =
+    `Dernière mise à jour : ${new Date().toLocaleString("fr-FR")}`;
+}
+
+loadData();
+setInterval(loadData, 60000); // Auto-refresh toutes les 60s
+</script>
+</body>
+</html>
