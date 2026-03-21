@@ -193,6 +193,14 @@ def compute_indicators(df):
     e12=c.ewm(span=12,adjust=False).mean();e26=c.ewm(span=26,adjust=False).mean()
     df["macd"]=e12-e26;df["macd_signal"]=df["macd"].ewm(span=9,adjust=False).mean()
     df["macd_hist"]=df["macd"]-df["macd_signal"];df["ma50"]=c.rolling(50).mean()
+    # EMA200 — tendance long terme
+    df["ema200"]=c.ewm(span=200,adjust=False).mean()
+    # Bollinger Bands (20 periodes, 2 ecarts-types)
+    df["bb_mid"]=c.rolling(20).mean()
+    df["bb_std"]=c.rolling(20).std()
+    df["bb_upper"]=df["bb_mid"]+2*df["bb_std"]
+    df["bb_lower"]=df["bb_mid"]-2*df["bb_std"]
+    df["bb_pct"]=(c-df["bb_lower"])/(df["bb_upper"]-df["bb_lower"])  # 0=bas 1=haut
     return df
 
 def _parse_price(s):
@@ -222,7 +230,15 @@ def generate_chart(df,pair,tf,sltp=None,signal=""):
     gs=gridspec.GridSpec(3,1,figure=fig,height_ratios=[3,1,1],hspace=0.04,left=0.02,right=0.88,top=0.93,bottom=0.07)
     ax1=fig.add_subplot(gs[0]);ax2=fig.add_subplot(gs[1]);ax3=fig.add_subplot(gs[2])
     draw_candles(ax1,df)
-    ax1.plot(idx,df["ma50"],color=MA_COL,linewidth=1.2,zorder=4)
+    ax1.plot(idx,df["ma50"],color=MA_COL,linewidth=1.2,zorder=4,label="MA50")
+    # EMA200
+    if "ema200" in df.columns:
+        ax1.plot(idx,df["ema200"],color="#a855f7",linewidth=1.0,linestyle="--",zorder=4,alpha=0.8)
+    # Bollinger Bands
+    if "bb_upper" in df.columns:
+        ax1.plot(idx,df["bb_upper"],color="#64748b",linewidth=0.6,linestyle=":",zorder=3,alpha=0.7)
+        ax1.plot(idx,df["bb_lower"],color="#64748b",linewidth=0.6,linestyle=":",zorder=3,alpha=0.7)
+        ax1.fill_between(idx,df["bb_lower"],df["bb_upper"],alpha=0.04,color="#64748b",zorder=1)
     style_ax(ax1,label=f"{pair}  {TF_LABELS[tf]}")
     ax1.set_xlim(-1,n+1);ax1.autoscale(axis="y")
     # Lignes SL/TP annotees
@@ -275,6 +291,13 @@ def call_groq(img_bytes,df,pair,tf):
     closes=df["close"].values
     bull_count=sum(1 for i in range(len(closes)-1,max(len(closes)-6,-1),-1) if closes[i]>closes[i-1])
     bear_count=sum(1 for i in range(len(closes)-1,max(len(closes)-6,-1),-1) if closes[i]<closes[i-1])
+    # EMA200 + Bollinger
+    ema200=df["ema200"].iloc[-1] if "ema200" in df.columns else ma50
+    above_ema200=last["close"]>ema200
+    bb_upper=df["bb_upper"].iloc[-1] if "bb_upper" in df.columns else 0
+    bb_lower=df["bb_lower"].iloc[-1] if "bb_lower" in df.columns else 0
+    bb_pct=float(df["bb_pct"].iloc[-1]) if "bb_pct" in df.columns else 0.5
+    bb_zone="BAS<0.2 zone achat" if bb_pct<0.2 else "HAUT>0.8 zone vente" if bb_pct>0.8 else f"MILIEU {bb_pct:.2f}"
     is_xau=pair.startswith("XAU");risk=BALANCE*0.01;b64=base64.b64encode(img_bytes).decode()
     xau_r=f"""
 REGLES XAU: sl_pips/tp_pips=DOLLARS. SL M15:8-15$ H1:15-25$ H4:25-45$.
@@ -287,23 +310,29 @@ TP minimum = SL x 2 (ratio 1:2 minimum obligatoire)"""
 
 DONNEES TECHNIQUES:
 - Close={last['close']:.2f} | MA50={ma50:.2f} | Prix={'AU-DESSUS' if above else 'EN-DESSOUS'} MA50 ({dist_ma50:.1f}%)
+- EMA200={ema200:.2f} | Prix={'AU-DESSUS' if above_ema200 else 'EN-DESSOUS'} EMA200 (tendance long terme {'HAUSSIERE' if above_ema200 else 'BAISSIERE'})
+- Bollinger: Upper={bb_upper:.2f} Lower={bb_lower:.2f} Position={bb_zone}
 - RSI={rsi:.2f} | Pente RSI 4 bougies={rsi_slope:+.1f} | Zone={'SURVENTE<30' if rsi<30 else 'SURACHAT>70' if rsi>70 else 'NEUTRE 30-70'}
 - MACD histogramme={macd_col} {macd_dir} {macd_accel}
 - Momentum: {bull_count} bougies haussières / {bear_count} baissières sur 5 dernières
 
-CRITERES STRICTS BUY (besoin des 4):
+CRITERES STRICTS BUY (besoin de 5 sur 6):
 1. RSI < 45 ET pente RSI positive (montant)
 2. MACD histogramme vert ET accelere OU vient de croiser
 3. Prix AU-DESSUS de la MA50
-4. Au moins 3 bougies haussières sur les 5 dernières
+4. Prix AU-DESSUS de l'EMA200 (tendance long terme haussière)
+5. Bollinger: prix en zone BAS (<0.3) — opportunité d'achat
+6. Au moins 3 bougies haussières sur les 5 dernières
 
-CRITERES STRICTS SELL (besoin des 4):
+CRITERES STRICTS SELL (besoin de 5 sur 6):
 1. RSI > 55 ET pente RSI negative (descendant)
 2. MACD histogramme rouge ET accelere OU vient de croiser
 3. Prix EN-DESSOUS de la MA50
-4. Au moins 3 bougies baissières sur les 5 dernières
+4. Prix EN-DESSOUS de l'EMA200 (tendance long terme baissière)
+5. Bollinger: prix en zone HAUT (>0.7) — opportunité de vente
+6. Au moins 3 bougies baissières sur les 5 dernières
 
-WAIT si moins de 3 critères remplis ou marché en range.
+WAIT si moins de 4 critères remplis, marché en range, ou Bollinger en zone neutre.
 
 SCORING (sois STRICT, penalise le moindre doute):
 - 85-100: Tous critères parfaits, tendance forte, momentum clair
@@ -560,6 +589,7 @@ def analyze_pair(pair,state):
         msg=build_email(consensus,charts,pair);send_email(msg)
         state=mark_sent(state,pair,sig)
         write_signal_json(consensus,pair)
+        save_signal_history(consensus,pair)
     except Exception as e:print(f"  Erreur email: {e}");traceback.print_exc()
     return state,True
 
@@ -603,7 +633,133 @@ def main():
         except Exception as e:print(f"Erreur {pair}: {e}");traceback.print_exc()
         time.sleep(3)
     if GH_TOKEN:write_state(state,sha)
+    # Rapport hebdomadaire le vendredi soir
+    try: send_weekly_report()
+    except Exception as e: print(f"Rapport hebdo: {e}")
     print(f"\n{'='*55}\n  Scan termine — {sent_total} signal(s) sur {len(PAIRS)} paire(s)\n{'='*55}\n")
+
+
+
+# ─────────────────────────────────────────────────────────────
+#  RAPPORT HEBDOMADAIRE
+# ─────────────────────────────────────────────────────────────
+def save_signal_history(consensus: dict, pair: str, result: str = "pending"):
+    """Sauvegarde l'historique des signaux pour le rapport et le dashboard."""
+    if not GH_TOKEN or not GH_REPO: return
+    url = f"https://api.github.com/repos/{GH_REPO}/contents/signals_history.json"
+    hdrs = {"Authorization": f"token {GH_TOKEN}", "Accept": "application/vnd.github.v3+json"}
+    history = []
+    sha = None
+    try:
+        r = requests.get(url, headers=hdrs, timeout=10)
+        if r.status_code == 200:
+            d = r.json()
+            sha = d["sha"]
+            history = json.loads(base64.b64decode(d["content"]).decode())
+    except: pass
+    sig = consensus["signal"]
+    sltp = consensus["r1"].get("sltp", {})
+    history.append({
+        "date":      datetime.now(timezone.utc).strftime("%Y-%m-%d"),
+        "time":      datetime.now(timezone.utc).strftime("%H:%M"),
+        "pair":      pair,
+        "signal":    sig,
+        "score_h1":  consensus["score_h1"],
+        "score_h4":  consensus["score_h4"],
+        "entry":     sltp.get("entree", "0"),
+        "sl":        sltp.get("sl", "0"),
+        "tp":        sltp.get("tp", "0"),
+        "lot":       sltp.get("lot_micro", "0.01"),
+        "rr":        sltp.get("rr", "1:2"),
+        "result":    result
+    })
+    # Garder 90 jours max
+    history = history[-500:]
+    content_b64 = base64.b64encode(json.dumps(history, indent=2).encode()).decode()
+    body = {"message": f"[history] {sig} {pair}", "content": content_b64}
+    if sha: body["sha"] = sha
+    try: requests.put(url, headers=hdrs, json=body, timeout=10)
+    except Exception as e: print(f"  History: {e}")
+
+def send_weekly_report():
+    """Envoie un rapport hebdomadaire chaque vendredi soir."""
+    now = datetime.now(timezone.utc)
+    if now.weekday() != 4 or now.hour < 20: return  # Vendredi après 20h UTC
+    if not GH_TOKEN or not GH_REPO: return
+    # Lire l'historique
+    url = f"https://api.github.com/repos/{GH_REPO}/contents/signals_history.json"
+    hdrs = {"Authorization": f"token {GH_TOKEN}", "Accept": "application/vnd.github.v3+json"}
+    try:
+        r = requests.get(url, headers=hdrs, timeout=10)
+        if r.status_code != 200: return
+        history = json.loads(base64.b64decode(r.json()["content"]).decode())
+    except: return
+    # Filtrer la semaine
+    week_ago = (now - timedelta(days=7)).strftime("%Y-%m-%d")
+    week = [s for s in history if s.get("date","") >= week_ago]
+    if not week: return
+    total = len(week)
+    pairs_count = {}
+    for s in week:
+        p = s.get("pair","?")
+        pairs_count[p] = pairs_count.get(p, 0) + 1
+    best_pair = max(pairs_count, key=pairs_count.get) if pairs_count else "—"
+    rows = "".join(f"""<tr style="border-bottom:1px solid #f1f5f9">
+      <td style="padding:8px;font-size:.8rem">{s.get('date','')} {s.get('time','')}</td>
+      <td style="padding:8px;font-size:.8rem;font-weight:700">{s.get('pair','')}</td>
+      <td style="padding:8px;font-size:.8rem;color:{'#2563eb' if s.get('signal')=='BUY' else '#dc2626'};font-weight:700">{s.get('signal','')}</td>
+      <td style="padding:8px;font-size:.8rem">{s.get('score_h1','')}/100</td>
+      <td style="padding:8px;font-size:.8rem">{s.get('entry','')}</td>
+      <td style="padding:8px;font-size:.8rem;color:#dc2626">{s.get('sl','')}</td>
+      <td style="padding:8px;font-size:.8rem;color:#16a34a">{s.get('tp','')}</td>
+    </tr>""" for s in week[-20:])
+    html = f"""<!DOCTYPE html><html><body style="font-family:Arial;padding:16px;background:#f1f5f9">
+<div style="max-width:660px;margin:auto;background:#1e293b;border-radius:16px;padding:24px;color:#fff;text-align:center">
+  <div style="font-size:1.8rem;font-weight:900">📊 Rapport Hebdomadaire</div>
+  <div style="font-size:.9rem;opacity:.7;margin-top:6px">Semaine du {week_ago} au {now.strftime('%Y-%m-%d')}</div>
+</div>
+<div style="max-width:660px;margin:12px auto;background:#fff;border-radius:16px;padding:20px;box-shadow:0 2px 12px rgba(0,0,0,.1)">
+  <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:12px;margin-bottom:20px">
+    <div style="background:#eff6ff;border-radius:12px;padding:16px;text-align:center">
+      <div style="font-size:2rem;font-weight:900;color:#2563eb">{total}</div>
+      <div style="font-size:.75rem;color:#64748b;margin-top:4px">SIGNAUX</div>
+    </div>
+    <div style="background:#f0fdf4;border-radius:12px;padding:16px;text-align:center">
+      <div style="font-size:2rem;font-weight:900;color:#16a34a">{len([s for s in week if s.get('signal')=='BUY'])}</div>
+      <div style="font-size:.75rem;color:#64748b;margin-top:4px">BUY</div>
+    </div>
+    <div style="background:#fef2f2;border-radius:12px;padding:16px;text-align:center">
+      <div style="font-size:2rem;font-weight:900;color:#dc2626">{len([s for s in week if s.get('signal')=='SELL'])}</div>
+      <div style="font-size:.75rem;color:#64748b;margin-top:4px">SELL</div>
+    </div>
+  </div>
+  <div style="background:#f8fafc;border-radius:10px;padding:12px;margin-bottom:16px;font-size:.85rem;color:#1e293b">
+    🏆 Paire la plus active : <b>{best_pair}</b> ({pairs_count.get(best_pair,0)} signaux)
+  </div>
+  <table style="width:100%;border-collapse:collapse">
+    <tr style="background:#f8fafc">
+      <th style="padding:8px;font-size:.72rem;color:#64748b;text-align:left">Date</th>
+      <th style="padding:8px;font-size:.72rem;color:#64748b;text-align:left">Paire</th>
+      <th style="padding:8px;font-size:.72rem;color:#64748b;text-align:left">Signal</th>
+      <th style="padding:8px;font-size:.72rem;color:#64748b;text-align:left">Score</th>
+      <th style="padding:8px;font-size:.72rem;color:#64748b;text-align:left">Entrée</th>
+      <th style="padding:8px;font-size:.72rem;color:#64748b;text-align:left">SL</th>
+      <th style="padding:8px;font-size:.72rem;color:#64748b;text-align:left">TP</th>
+    </tr>
+    {rows}
+  </table>
+</div>
+</body></html>"""
+    msg = MIMEMultipart("alternative")
+    msg["Subject"] = f"📊 Rapport Hebdomadaire ChartAnalyzer — {total} signaux cette semaine"
+    msg["From"] = EMAIL_FROM
+    msg["To"]   = EMAIL_TO
+    msg.attach(MIMEText(html, "html", "utf-8"))
+    try:
+        send_email(msg)
+        print("  Rapport hebdomadaire envoyé !")
+    except Exception as e:
+        print(f"  Erreur rapport: {e}")
 
 if __name__=="__main__":
     main()
