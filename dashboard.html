@@ -4,208 +4,280 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>ChartAnalyzer Dashboard</title>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.0/chart.umd.min.js"></script>
 <style>
-  * { box-sizing: border-box; margin: 0; padding: 0; }
-  body { font-family: 'Segoe UI', Arial, sans-serif; background: #0f172a; color: #e2e8f0; min-height: 100vh; }
-  .header { background: linear-gradient(135deg, #1e293b, #0f172a); padding: 20px; border-bottom: 1px solid #1e293b; }
-  .header h1 { font-size: 1.5rem; font-weight: 900; color: #f8fafc; }
-  .header p  { font-size: .8rem; color: #64748b; margin-top: 4px; }
-  .live { display: inline-block; width: 8px; height: 8px; background: #22c55e; border-radius: 50%; margin-right: 6px; animation: pulse 2s infinite; }
-  @keyframes pulse { 0%,100%{opacity:1} 50%{opacity:.3} }
-  .container { max-width: 900px; margin: 0 auto; padding: 20px 16px; }
-  .grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(160px, 1fr)); gap: 12px; margin-bottom: 24px; }
-  .card { background: #1e293b; border-radius: 14px; padding: 16px; border: 1px solid #334155; }
-  .card-lbl { font-size: .65rem; color: #64748b; text-transform: uppercase; letter-spacing: .08em; margin-bottom: 6px; }
-  .card-val { font-size: 1.8rem; font-weight: 900; }
-  .card-sub { font-size: .7rem; color: #64748b; margin-top: 4px; }
-  .green { color: #22c55e; } .red { color: #ef4444; } .blue { color: #3b82f6; } .purple { color: #a855f7; }
-  .section-title { font-size: .75rem; font-weight: 700; color: #64748b; text-transform: uppercase; letter-spacing: .1em; margin-bottom: 12px; padding-bottom: 8px; border-bottom: 1px solid #1e293b; }
-  .signal-card { background: #1e293b; border-radius: 12px; padding: 16px; margin-bottom: 10px; border: 1px solid #334155; display: flex; align-items: center; gap: 14px; }
-  .sig-badge { padding: 6px 14px; border-radius: 20px; font-size: .8rem; font-weight: 900; min-width: 70px; text-align: center; }
-  .sig-buy { background: #1d4ed8; color: #fff; }
-  .sig-sell { background: #dc2626; color: #fff; }
-  .sig-info { flex: 1; }
-  .sig-pair { font-size: 1rem; font-weight: 800; color: #f8fafc; }
-  .sig-meta { font-size: .72rem; color: #64748b; margin-top: 3px; }
-  .sig-scores { display: flex; gap: 8px; margin-top: 6px; }
-  .score-pill { padding: 2px 8px; border-radius: 8px; font-size: .68rem; font-weight: 700; background: #0f172a; color: #94a3b8; }
-  .sig-levels { text-align: right; }
-  .sig-entry { font-size: .9rem; font-weight: 800; color: #f8fafc; }
-  .sig-sl { font-size: .72rem; color: #ef4444; }
-  .sig-tp { font-size: .72rem; color: #22c55e; }
-  .empty { text-align: center; padding: 40px; color: #475569; font-size: .9rem; }
-  .refresh-btn { background: #2563eb; color: #fff; border: none; padding: 8px 18px; border-radius: 8px; font-size: .8rem; cursor: pointer; float: right; margin-top: -4px; }
-  .refresh-btn:hover { background: #1d4ed8; }
-  .bar-wrap { background: #0f172a; border-radius: 6px; height: 8px; overflow: hidden; margin-top: 8px; }
-  .bar-fill { height: 100%; border-radius: 6px; transition: width .5s; }
-  .last-update { font-size: .65rem; color: #475569; text-align: center; margin-top: 20px; padding-top: 16px; border-top: 1px solid #1e293b; }
-  .pair-stat { background: #1e293b; border-radius: 10px; padding: 12px; margin-bottom: 8px; border: 1px solid #334155; }
-  .pair-name { font-size: .85rem; font-weight: 700; color: #f8fafc; }
-  .pair-count { font-size: .72rem; color: #64748b; }
+  *{box-sizing:border-box;margin:0;padding:0}
+  body{font-family:'Segoe UI',Arial,sans-serif;background:#0f172a;color:#e2e8f0;min-height:100vh}
+  .header{background:linear-gradient(135deg,#1e293b,#0f172a);padding:16px 20px;border-bottom:1px solid #1e293b;position:sticky;top:0;z-index:10}
+  .header-inner{max-width:960px;margin:0 auto;display:flex;justify-content:space-between;align-items:center}
+  .header h1{font-size:1.3rem;font-weight:900;color:#f8fafc}
+  .header p{font-size:.72rem;color:#64748b;margin-top:3px}
+  .live{display:inline-block;width:8px;height:8px;background:#22c55e;border-radius:50%;margin-right:6px;animation:pulse 2s infinite}
+  @keyframes pulse{0%,100%{opacity:1}50%{opacity:.3}}
+  .refresh-btn{background:#2563eb;color:#fff;border:none;padding:7px 16px;border-radius:8px;font-size:.78rem;cursor:pointer;font-weight:700}
+  .container{max-width:960px;margin:0 auto;padding:18px 14px}
+  .health-bar{display:grid;grid-template-columns:repeat(auto-fit,minmax(140px,1fr));gap:10px;margin-bottom:20px}
+  .health-card{background:#1e293b;border-radius:12px;padding:12px 14px;border:1px solid #334155;display:flex;align-items:center;gap:10px}
+  .health-dot{width:10px;height:10px;border-radius:50%;flex-shrink:0}
+  .dot-ok{background:#22c55e;box-shadow:0 0 6px #22c55e}
+  .dot-warn{background:#f59e0b;box-shadow:0 0 6px #f59e0b}
+  .dot-err{background:#ef4444;box-shadow:0 0 6px #ef4444}
+  .health-label{font-size:.63rem;color:#64748b;text-transform:uppercase}
+  .health-val{font-size:.85rem;font-weight:800;margin-top:1px}
+  .h-ok{color:#22c55e}.h-warn{color:#f59e0b}.h-err{color:#ef4444}
+  .countdown-wrap{background:#1e293b;border-radius:14px;padding:16px 20px;margin-bottom:20px;border:1px solid #334155;display:flex;align-items:center;justify-content:space-between;gap:16px}
+  .countdown-label{font-size:.68rem;color:#64748b;text-transform:uppercase;letter-spacing:.06em}
+  .countdown-timer{font-size:2rem;font-weight:900;color:#3b82f6;font-variant-numeric:tabular-nums}
+  .countdown-sub{font-size:.65rem;color:#475569;margin-top:2px}
+  .progress-track{flex:1;background:#0f172a;border-radius:8px;height:10px;overflow:hidden}
+  .progress-fill{height:100%;border-radius:8px;background:linear-gradient(90deg,#3b82f6,#8b5cf6);transition:width 1s linear}
+  .kpi-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(130px,1fr));gap:10px;margin-bottom:20px}
+  .kpi{background:#1e293b;border-radius:12px;padding:14px;border:1px solid #334155}
+  .kpi-lbl{font-size:.62rem;color:#64748b;text-transform:uppercase;letter-spacing:.07em;margin-bottom:5px}
+  .kpi-val{font-size:1.7rem;font-weight:900}
+  .kpi-sub{font-size:.65rem;color:#64748b;margin-top:3px}
+  .c-green{color:#22c55e}.c-red{color:#ef4444}.c-blue{color:#3b82f6}.c-purple{color:#a855f7}.c-orange{color:#f59e0b}
+  .sec{font-size:.72rem;font-weight:700;color:#64748b;text-transform:uppercase;letter-spacing:.1em;margin-bottom:10px;padding-bottom:7px;border-bottom:1px solid #1e293b;display:flex;justify-content:space-between;align-items:center}
+  .signal-now{background:#1e293b;border-radius:14px;padding:18px;margin-bottom:20px;border:2px solid #334155}
+  .sig-header{display:flex;align-items:center;gap:12px;margin-bottom:12px}
+  .sig-badge{padding:8px 18px;border-radius:20px;font-size:.9rem;font-weight:900}
+  .sig-buy{background:#1d4ed8;color:#fff}.sig-sell{background:#dc2626;color:#fff}
+  .sig-pair-name{font-size:1.1rem;font-weight:900;color:#f8fafc}
+  .sig-meta{font-size:.72rem;color:#64748b}
+  .sig-levels{display:grid;grid-template-columns:repeat(4,1fr);gap:10px}
+  .sig-level{background:#0f172a;border-radius:10px;padding:10px;text-align:center}
+  .sig-level-lbl{font-size:.6rem;color:#64748b;margin-bottom:4px}
+  .sig-level-val{font-size:1rem;font-weight:900}
+  .score-row{display:flex;gap:8px;margin-top:10px}
+  .score-pill{padding:3px 10px;border-radius:8px;font-size:.7rem;font-weight:700;background:#0f172a;color:#94a3b8}
+  .chart-wrap{background:#1e293b;border-radius:14px;padding:16px;margin-bottom:20px;border:1px solid #334155}
+  .chart-container{position:relative;height:180px}
+  .hist-item{background:#1e293b;border-radius:10px;padding:12px 14px;margin-bottom:8px;border:1px solid #334155;display:flex;align-items:center;gap:12px}
+  .hist-badge{padding:4px 10px;border-radius:14px;font-size:.72rem;font-weight:900;min-width:58px;text-align:center}
+  .hist-info{flex:1}
+  .hist-pair{font-size:.88rem;font-weight:800;color:#f8fafc}
+  .hist-date{font-size:.68rem;color:#64748b;margin-top:2px}
+  .hist-bar{background:#0f172a;border-radius:4px;height:6px;overflow:hidden;margin-top:5px;width:100px}
+  .hist-fill{height:100%;border-radius:4px}
+  .result-tp{color:#22c55e;font-weight:900;font-size:.82rem}
+  .result-sl{color:#ef4444;font-weight:900;font-size:.82rem}
+  .result-pen{color:#f59e0b;font-weight:700;font-size:.78rem}
+  .pair-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(200px,1fr));gap:10px;margin-bottom:20px}
+  .pair-card{background:#1e293b;border-radius:12px;padding:14px;border:1px solid #334155}
+  .pair-name{font-size:.9rem;font-weight:800;color:#f8fafc;margin-bottom:8px}
+  .pair-stats{display:flex;gap:8px;flex-wrap:wrap}
+  .pair-pill{padding:3px 10px;border-radius:8px;font-size:.72rem;font-weight:700}
+  .empty{text-align:center;padding:30px;color:#475569;font-size:.85rem}
+  .last-update{font-size:.62rem;color:#475569;text-align:center;margin-top:16px;padding-top:12px;border-top:1px solid #1e293b}
 </style>
 </head>
 <body>
 <div class="header">
-  <div style="max-width:900px;margin:0 auto;display:flex;justify-content:space-between;align-items:center">
+  <div class="header-inner">
     <div>
       <h1>🤖 <span class="live"></span>ChartAnalyzer Dashboard</h1>
-      <p>Signaux IA en temps réel · XAU/EUR · XAU/USD · Mise à jour toutes les 15 min</p>
+      <p id="header-sub">Chargement...</p>
     </div>
     <button class="refresh-btn" onclick="loadData()">🔄 Actualiser</button>
   </div>
 </div>
-
 <div class="container">
-  <!-- KPIs -->
-  <div class="grid" id="kpis">
-    <div class="card"><div class="card-lbl">Signaux total</div><div class="card-val blue" id="k-total">—</div><div class="card-sub">Toutes paires</div></div>
-    <div class="card"><div class="card-lbl">Cette semaine</div><div class="card-val purple" id="k-week">—</div><div class="card-sub">7 derniers jours</div></div>
-    <div class="card"><div class="card-lbl">BUY</div><div class="card-val green" id="k-buy">—</div><div class="card-sub">Signaux haussiers</div></div>
-    <div class="card"><div class="card-lbl">SELL</div><div class="card-val red" id="k-sell">—</div><div class="card-sub">Signaux baissiers</div></div>
-    <div class="card"><div class="card-lbl">Score moyen H1</div><div class="card-val blue" id="k-score">—</div><div class="card-sub">Sur tous les signaux</div></div>
+
+  <div class="sec">🟢 Santé du système <span id="health-time" style="font-size:.65rem;color:#475569"></span></div>
+  <div class="health-bar">
+    <div class="health-card"><div class="health-dot dot-warn" id="dot-scanner"></div><div><div class="health-label">Scanner GitHub</div><div class="health-val" id="h-scanner">Vérification...</div></div></div>
+    <div class="health-card"><div class="health-dot dot-warn" id="dot-signal"></div><div><div class="health-label">Dernier signal</div><div class="health-val" id="h-signal">—</div></div></div>
+    <div class="health-card"><div class="health-dot dot-warn" id="dot-groq"></div><div><div class="health-label">Groq IA</div><div class="health-val" id="h-groq">—</div></div></div>
+    <div class="health-card"><div class="health-dot dot-warn" id="dot-market"></div><div><div class="health-label">Marché</div><div class="health-val" id="h-market">—</div></div></div>
   </div>
 
-  <!-- Signal actuel -->
-  <div style="margin-bottom:24px">
-    <div class="section-title">🔴 Signal en cours</div>
-    <div id="current-signal"><div class="empty">Chargement...</div></div>
+  <div class="countdown-wrap">
+    <div>
+      <div class="countdown-label">⏱ Prochain scan GitHub</div>
+      <div class="countdown-timer" id="countdown">--:--</div>
+      <div class="countdown-sub" id="next-scan-time">Calcul...</div>
+    </div>
+    <div class="progress-track"><div class="progress-fill" id="progress-fill" style="width:0%"></div></div>
+    <div style="text-align:right">
+      <div class="countdown-label">Fréquence</div>
+      <div style="font-size:.9rem;font-weight:800;color:#8b5cf6">15 min</div>
+      <div class="countdown-sub">Lun — Ven</div>
+    </div>
   </div>
 
-  <!-- Historique -->
-  <div style="margin-bottom:24px">
-    <div class="section-title">📋 Historique des signaux (20 derniers)</div>
-    <div id="history-list"><div class="empty">Chargement...</div></div>
+  <div class="sec">📊 Statistiques globales</div>
+  <div class="kpi-grid">
+    <div class="kpi"><div class="kpi-lbl">Total signaux</div><div class="kpi-val c-blue" id="k-total">—</div><div class="kpi-sub">Toutes paires</div></div>
+    <div class="kpi"><div class="kpi-lbl">Cette semaine</div><div class="kpi-val c-purple" id="k-week">—</div><div class="kpi-sub">7 derniers jours</div></div>
+    <div class="kpi"><div class="kpi-lbl">BUY</div><div class="kpi-val c-green" id="k-buy">—</div><div class="kpi-sub">Haussiers</div></div>
+    <div class="kpi"><div class="kpi-lbl">SELL</div><div class="kpi-val c-red" id="k-sell">—</div><div class="kpi-sub">Baissiers</div></div>
+    <div class="kpi"><div class="kpi-lbl">Score moyen</div><div class="kpi-val c-orange" id="k-score">—</div><div class="kpi-sub">H1 moyen</div></div>
+    <div class="kpi"><div class="kpi-lbl">Win rate</div><div class="kpi-val c-green" id="k-wr">—</div><div class="kpi-sub">TP/(TP+SL)</div></div>
   </div>
 
-  <!-- Stats par paire -->
-  <div>
-    <div class="section-title">📊 Stats par paire</div>
-    <div id="pair-stats"><div class="empty">Chargement...</div></div>
-  </div>
+  <div class="sec">🔴 Signal en cours</div>
+  <div id="current-signal"><div class="empty">Chargement...</div></div>
 
-  <div class="last-update" id="last-update">Dernière mise à jour : —</div>
+  <div class="sec">📈 Courbe de performance</div>
+  <div class="chart-wrap"><div class="chart-container"><canvas id="equityChart"></canvas></div></div>
+
+  <div class="sec">📋 Historique <span id="hist-count" style="font-size:.65rem;color:#475569"></span></div>
+  <div id="history-list"><div class="empty">Chargement...</div></div>
+
+  <div class="sec">🌍 Stats par paire</div>
+  <div class="pair-grid" id="pair-stats"></div>
+
+  <div class="last-update" id="last-update">—</div>
 </div>
 
 <script>
-const GITHUB_USER = "benjibaz31-maker";
-const GITHUB_REPO = "chart-analyser";
-const RAW = `https://raw.githubusercontent.com/${GITHUB_USER}/${GITHUB_REPO}/main`;
+const GH_USER="benjibaz31-maker",GH_REPO="chart-analyser";
+const RAW=`https://raw.githubusercontent.com/${GH_USER}/${GH_REPO}/main`;
+let chart=null;
 
-async function fetchJSON(path) {
-  try {
-    const r = await fetch(`${RAW}/${path}?t=${Date.now()}`);
-    if (!r.ok) return null;
-    return await r.json();
-  } catch { return null; }
+async function fetchJSON(p){
+  try{const r=await fetch(`${RAW}/${p}?t=${Date.now()}`);return r.ok?await r.json():null}
+  catch{return null}
 }
 
-function formatDate(d, t) {
-  return `${d || ""} ${t || ""}`.trim();
+function setDot(id,valId,status,text){
+  document.getElementById(id).className="health-dot "+(status==="ok"?"dot-ok":status==="warn"?"dot-warn":"dot-err");
+  const v=document.getElementById(valId);v.className="health-val "+(status==="ok"?"h-ok":status==="warn"?"h-warn":"h-err");v.textContent=text;
 }
 
-async function loadData() {
-  // Signal actuel
-  const signal = await fetchJSON("signal.json");
-  const history = await fetchJSON("signals_history.json") || [];
+function updateHealth(signal,history){
+  const now=new Date(),wd=now.getUTCDay(),h=now.getUTCHours();
+  const open=!(wd===6)&&!(wd===0&&h<22)&&!(wd===5&&h>=21);
+  setDot("dot-market","h-market",open?"ok":"warn",open?"Ouvert":"Fermé");
+  if(history&&history.length>0){
+    const last=history[history.length-1];
+    const d=new Date(last.date+"T"+(last.time||"00:00")+":00Z");
+    const dh=(now-d)/3600000;
+    setDot("dot-signal","h-signal",dh<48?"ok":"warn",dh<1?"< 1h":dh<24?Math.floor(dh)+"h":Math.floor(dh/24)+"j");
+  } else setDot("dot-signal","h-signal","warn","Aucun encore");
+  if(signal&&signal.created_at){
+    const d=new Date(signal.created_at);
+    const dh=(now-d)/3600000;
+    setDot("dot-scanner","h-scanner",dh<2?"ok":open?"warn":"ok",dh<1?"Actif < 1h":dh<24?"Actif "+Math.floor(dh)+"h":"En attente");
+  } else setDot("dot-scanner","h-scanner",open?"warn":"ok",open?"En attente":"Week-end");
+  setDot("dot-groq","h-groq",history&&history.length>0?"ok":"warn",history&&history.length>0?"OK":"Inconnu");
+  document.getElementById("health-time").textContent="Mis à jour "+now.toLocaleTimeString("fr-FR");
+}
 
-  // Signal actuel
-  const curEl = document.getElementById("current-signal");
-  if (signal && signal.status === "pending") {
-    const isBuy = signal.action === "BUY";
-    curEl.innerHTML = `
-      <div class="signal-card" style="border-color:${isBuy?'#1d4ed8':'#dc2626'}">
-        <div class="sig-badge ${isBuy?'sig-buy':'sig-sell'}">${isBuy?'▲ BUY':'▼ SELL'}</div>
-        <div class="sig-info">
-          <div class="sig-pair">${signal.pair || "—"}</div>
-          <div class="sig-meta">${signal.created_at || ""} · RR ${signal.rr || "1:2"} · Lot ${signal.lot || "0.01"}</div>
-          <div class="sig-scores">
-            <span class="score-pill">H1: ${signal.score_h1}/100</span>
-            <span class="score-pill">H4: ${signal.score_h4}/100</span>
-          </div>
-        </div>
-        <div class="sig-levels">
-          <div class="sig-entry">📥 ${signal.entry}</div>
-          <div class="sig-sl">🛑 SL: ${signal.sl}</div>
-          <div class="sig-tp">🎯 TP: ${signal.tp}</div>
-        </div>
-      </div>`;
-  } else {
-    curEl.innerHTML = `<div class="empty">⏳ Aucun signal en attente — scanner actif toutes les 15 min</div>`;
+function startCountdown(){
+  function tick(){
+    const now=new Date(),min=now.getUTCMinutes(),sec=now.getUTCSeconds();
+    const borders=[0,15,30,45];
+    let nextMin=borders.find(b=>b>min)??60;
+    let rem=(nextMin-min)*60-sec;
+    if(rem<0)rem+=3600;
+    const m=String(Math.floor(rem/60)).padStart(2,"0"),s=String(rem%60).padStart(2,"0");
+    document.getElementById("countdown").textContent=m+":"+s;
+    const ns=new Date(now);ns.setUTCMinutes(nextMin===60?0:nextMin,0,0);
+    if(nextMin===60)ns.setUTCHours(ns.getUTCHours()+1);
+    document.getElementById("next-scan-time").textContent="Prochain à "+ns.toLocaleTimeString("fr-FR",{hour:"2-digit",minute:"2-digit"});
+    document.getElementById("progress-fill").style.width=Math.min(100,(900-rem)/900*100)+"%";
   }
+  tick();setInterval(tick,1000);
+}
 
-  // Stats globales
-  const now = new Date();
-  const weekAgo = new Date(now - 7*24*60*60*1000).toISOString().slice(0,10);
-  const weekSignals = history.filter(s => (s.date||"") >= weekAgo);
-  const buys  = history.filter(s => s.signal === "BUY").length;
-  const sells = history.filter(s => s.signal === "SELL").length;
-  const avgScore = history.length > 0
-    ? Math.round(history.reduce((a,s) => a + (parseInt(s.score_h1)||0), 0) / history.length)
-    : 0;
+function renderCurrent(signal){
+  const el=document.getElementById("current-signal");
+  if(!signal||signal.status!=="pending"){el.innerHTML='<div class="empty">⏳ Aucun signal en attente</div>';return;}
+  const buy=signal.action==="BUY",col=buy?"#1d4ed8":"#dc2626";
+  const exp=signal.expires_at?Math.max(0,Math.floor((new Date(signal.expires_at)-new Date())/60000))+"min":"—";
+  el.innerHTML=`<div class="signal-now" style="border-color:${col}">
+    <div class="sig-header">
+      <div class="sig-badge ${buy?"sig-buy":"sig-sell"}">${buy?"▲ BUY":"▼ SELL"}</div>
+      <div><div class="sig-pair-name">${signal.pair||"—"}</div><div class="sig-meta">${signal.created_at||""} · Expire dans ${exp}</div></div>
+    </div>
+    <div class="sig-levels">
+      <div class="sig-level"><div class="sig-level-lbl">📥 ENTRÉE</div><div class="sig-level-val" style="color:#f8fafc">${signal.entry||"—"}</div></div>
+      <div class="sig-level"><div class="sig-level-lbl">🛑 STOP LOSS</div><div class="sig-level-val" style="color:#ef4444">${signal.sl||"—"}</div></div>
+      <div class="sig-level"><div class="sig-level-lbl">🎯 TAKE PROFIT</div><div class="sig-level-val" style="color:#22c55e">${signal.tp||"—"}</div></div>
+      <div class="sig-level"><div class="sig-level-lbl">📦 LOT</div><div class="sig-level-val" style="color:#a855f7">${signal.lot||"0.01"}</div></div>
+    </div>
+    <div class="score-row">
+      <span class="score-pill">H1: ${signal.score_h1}/100</span>
+      <span class="score-pill">H4: ${signal.score_h4}/100</span>
+      <span class="score-pill">RR: ${signal.rr||"1:2"}</span>
+    </div>
+  </div>`;
+}
 
-  document.getElementById("k-total").textContent = history.length;
-  document.getElementById("k-week").textContent  = weekSignals.length;
-  document.getElementById("k-buy").textContent   = buys;
-  document.getElementById("k-sell").textContent  = sells;
-  document.getElementById("k-score").textContent = avgScore + "/100";
-
-  // Historique
-  const histEl = document.getElementById("history-list");
-  if (history.length === 0) {
-    histEl.innerHTML = `<div class="empty">Aucun signal dans l'historique</div>`;
-  } else {
-    const last20 = [...history].reverse().slice(0, 20);
-    histEl.innerHTML = last20.map(s => {
-      const isBuy = s.signal === "BUY";
-      const score = parseInt(s.score_h1) || 0;
-      const barColor = score >= 75 ? "#22c55e" : score >= 65 ? "#f59e0b" : "#ef4444";
-      return `
-        <div class="signal-card">
-          <div class="sig-badge ${isBuy?'sig-buy':'sig-sell'}" style="font-size:.72rem">${isBuy?'▲ BUY':'▼ SELL'}</div>
-          <div class="sig-info">
-            <div class="sig-pair" style="font-size:.9rem">${s.pair||"—"}</div>
-            <div class="sig-meta">${formatDate(s.date, s.time)}</div>
-            <div class="bar-wrap"><div class="bar-fill" style="width:${score}%;background:${barColor}"></div></div>
-          </div>
-          <div class="sig-levels">
-            <div class="sig-entry" style="font-size:.8rem">📥 ${s.entry||"—"}</div>
-            <div class="sig-sl">🛑 ${s.sl||"—"}</div>
-            <div class="sig-tp">🎯 ${s.tp||"—"}</div>
-            <div style="font-size:.65rem;color:#64748b;margin-top:3px">H1=${s.score_h1} H4=${s.score_h4}</div>
-          </div>
-        </div>`;
-    }).join("");
-  }
-
-  // Stats par paire
-  const pairEl = document.getElementById("pair-stats");
-  const pairMap = {};
-  history.forEach(s => {
-    if (!pairMap[s.pair]) pairMap[s.pair] = {buy:0, sell:0, total:0};
-    pairMap[s.pair].total++;
-    if (s.signal === "BUY") pairMap[s.pair].buy++;
-    else pairMap[s.pair].sell++;
+function renderEquity(history){
+  const ctx=document.getElementById("equityChart").getContext("2d");
+  if(chart){chart.destroy();chart=null;}
+  if(!history||history.length===0)return;
+  let eq=1000;const labels=[],vals=[],cols=[];
+  history.forEach(s=>{
+    const r=s.result||"pending";
+    let chg=0;
+    if(r==="TP")chg=eq*0.02;
+    else if(r==="SL")chg=-eq*0.01;
+    eq+=chg;eq=parseFloat(eq.toFixed(2));
+    labels.push(s.date?s.date.slice(5):"");vals.push(eq);cols.push(chg>=0?"#22c55e":"#ef4444");
   });
-  pairEl.innerHTML = Object.entries(pairMap).length === 0
-    ? `<div class="empty">Aucune donnée</div>`
-    : Object.entries(pairMap).sort((a,b) => b[1].total - a[1].total).map(([pair, d]) => `
-        <div class="pair-stat" style="display:flex;justify-content:space-between;align-items:center">
-          <div>
-            <div class="pair-name">${pair}</div>
-            <div class="pair-count">${d.total} signaux total</div>
-          </div>
-          <div style="display:flex;gap:8px">
-            <span style="background:#1d4ed8;color:#fff;padding:3px 10px;border-radius:8px;font-size:.72rem;font-weight:700">▲ ${d.buy}</span>
-            <span style="background:#dc2626;color:#fff;padding:3px 10px;border-radius:8px;font-size:.72rem;font-weight:700">▼ ${d.sell}</span>
-          </div>
-        </div>`).join("");
-
-  document.getElementById("last-update").textContent =
-    `Dernière mise à jour : ${new Date().toLocaleString("fr-FR")}`;
+  chart=new Chart(ctx,{type:"line",data:{labels,datasets:[{label:"Capital (€)",data:vals,borderColor:"#3b82f6",backgroundColor:"rgba(59,130,246,0.08)",borderWidth:2,pointRadius:vals.length>20?0:4,pointBackgroundColor:cols,fill:true,tension:0.3}]},options:{responsive:true,maintainAspectRatio:false,plugins:{legend:{display:false},tooltip:{backgroundColor:"#1e293b",titleColor:"#94a3b8",bodyColor:"#f8fafc"}},scales:{x:{ticks:{color:"#475569",font:{size:10}},grid:{color:"#1e293b"}},y:{ticks:{color:"#475569",font:{size:10}},grid:{color:"#1e293b"}}}}});
 }
 
-loadData();
-setInterval(loadData, 60000); // Auto-refresh toutes les 60s
+function renderHistory(history){
+  const el=document.getElementById("history-list");
+  document.getElementById("hist-count").textContent="("+history.length+" total)";
+  if(!history||history.length===0){el.innerHTML='<div class="empty">Aucun signal enregistré</div>';return;}
+  el.innerHTML=[...history].reverse().slice(0,25).map(s=>{
+    const buy=s.signal==="BUY",sc=parseInt(s.score_h1)||0,r=s.result||"pending";
+    const bc=sc>=75?"#22c55e":sc>=65?"#f59e0b":"#ef4444";
+    const rHtml=r==="TP"?'<div class="result-tp">✅ TP</div>':r==="SL"?'<div class="result-sl">❌ SL</div>':'<div class="result-pen">⏳ En cours</div>';
+    return `<div class="hist-item">
+      <div class="hist-badge ${buy?"sig-buy":"sig-sell"}" style="font-size:.7rem">${buy?"▲ BUY":"▼ SELL"}</div>
+      <div class="hist-info">
+        <div class="hist-pair">${s.pair||"—"}</div>
+        <div class="hist-date">${s.date||""} ${s.time||""} · H1=${s.score_h1} H4=${s.score_h4}</div>
+        <div class="hist-bar"><div class="hist-fill" style="width:${sc}%;background:${bc}"></div></div>
+      </div>
+      <div style="text-align:right;min-width:80px;font-size:.65rem">
+        <div style="color:#f8fafc">📥 ${s.entry||"—"}</div>
+        <div style="color:#ef4444">🛑 ${s.sl||"—"}</div>
+        <div style="color:#22c55e">🎯 ${s.tp||"—"}</div>
+      </div>
+      <div style="text-align:right;min-width:70px">${rHtml}</div>
+    </div>`;
+  }).join("");
+}
+
+function renderKPIs(history){
+  const now=new Date(),wa=new Date(now-7*24*3600*1000).toISOString().slice(0,10);
+  const wk=history.filter(s=>(s.date||"")>=wa);
+  const buys=history.filter(s=>s.signal==="BUY").length;
+  const sells=history.filter(s=>s.signal==="SELL").length;
+  const avg=history.length>0?Math.round(history.reduce((a,s)=>a+(parseInt(s.score_h1)||0),0)/history.length):0;
+  const tps=history.filter(s=>s.result==="TP").length,sls=history.filter(s=>s.result==="SL").length;
+  const wr=(tps+sls)>0?Math.round(tps/(tps+sls)*100):null;
+  document.getElementById("k-total").textContent=history.length;
+  document.getElementById("k-week").textContent=wk.length;
+  document.getElementById("k-buy").textContent=buys;
+  document.getElementById("k-sell").textContent=sells;
+  document.getElementById("k-score").textContent=avg+"/100";
+  document.getElementById("k-wr").textContent=wr!==null?wr+"%":"—";
+  const pm={};
+  history.forEach(s=>{if(!pm[s.pair])pm[s.pair]={buy:0,sell:0,tp:0,sl:0};if(s.signal==="BUY")pm[s.pair].buy++;else pm[s.pair].sell++;if(s.result==="TP")pm[s.pair].tp++;if(s.result==="SL")pm[s.pair].sl++;});
+  document.getElementById("pair-stats").innerHTML=Object.keys(pm).length===0?'<div class="empty" style="grid-column:1/-1">Aucune donnée</div>':Object.entries(pm).sort((a,b)=>(b[1].buy+b[1].sell)-(a[1].buy+a[1].sell)).map(([pair,d])=>{
+    const pwr=(d.tp+d.sl)>0?Math.round(d.tp/(d.tp+d.sl)*100):null;
+    return `<div class="pair-card"><div class="pair-name">${pair}</div><div class="pair-stats"><span class="pair-pill" style="background:#1d4ed8;color:#fff">▲ ${d.buy}</span><span class="pair-pill" style="background:#dc2626;color:#fff">▼ ${d.sell}</span>${pwr!==null?`<span class="pair-pill" style="background:#0f172a;color:#22c55e">WR ${pwr}%</span>`:""}</div></div>`;
+  }).join("");
+}
+
+async function loadData(){
+  const [signal,history]=await Promise.all([fetchJSON("signal.json"),fetchJSON("signals_history.json")]);
+  const h=history||[];
+  updateHealth(signal,h);renderCurrent(signal);renderKPIs(h);renderEquity(h);renderHistory(h);
+  const now=new Date();
+  document.getElementById("last-update").textContent="Dernière mise à jour : "+now.toLocaleString("fr-FR");
+  document.getElementById("header-sub").textContent="Signaux IA · XAU/EUR · XAU/USD · "+now.toLocaleTimeString("fr-FR");
+}
+
+startCountdown();loadData();setInterval(loadData,60000);
 </script>
 </body>
 </html>
