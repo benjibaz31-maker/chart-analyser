@@ -5,7 +5,6 @@ Multi-paires + M15+H1+H4 + Anti-spam + Graphiques annotés SL/TP
 """
 
 import os, sys, json, base64, smtplib, time, traceback, re
-from xml.etree import ElementTree as ET
 from datetime import datetime, timezone, timedelta
 from email.mime.multipart import MIMEMultipart
 from email.mime.text import MIMEText
@@ -84,136 +83,6 @@ def mark_sent(state,pair,signal):
     cutoff=(datetime.now(timezone.utc)-timedelta(days=14)).strftime("%Y-%m-%d")
     return {k:v for k,v in state.items() if k.split("_")[-1]>=cutoff}
 
-
-
-# ─────────────────────────────────────────────────────────────
-#  FIBONACCI + ATR
-# ─────────────────────────────────────────────────────────────
-def calc_fibonacci_levels(df, action, lookback=50):
-    """
-    Calcule les niveaux Fibonacci sur les N dernières bougies.
-    Retourne les niveaux clés pour SL et TP.
-    """
-    recent = df.tail(lookback)
-    swing_high = recent["high"].max()
-    swing_low  = recent["low"].min()
-    diff = swing_high - swing_low
-    if diff == 0: return {}
-    levels = {
-        "0.0":   swing_low,
-        "23.6":  swing_low + 0.236 * diff,
-        "38.2":  swing_low + 0.382 * diff,
-        "50.0":  swing_low + 0.500 * diff,
-        "61.8":  swing_low + 0.618 * diff,
-        "78.6":  swing_low + 0.786 * diff,
-        "100.0": swing_high,
-        "127.2": swing_low + 1.272 * diff,
-        "161.8": swing_low + 1.618 * diff,
-    }
-    close = df["close"].iloc[-1]
-    if action == "BUY":
-        # SL = niveau Fib sous le prix actuel (38.2% ou 50%)
-        sl_candidates = [v for k,v in levels.items() if v < close]
-        sl = max(sl_candidates) if sl_candidates else close - diff*0.382
-        # TP = niveau Fib au-dessus (61.8%, 100%, 127.2%)
-        tp_candidates = [v for k,v in levels.items() if v > close]
-        tp = min(tp_candidates) if tp_candidates else close + diff*0.618
-    else:
-        # SL = niveau Fib au-dessus
-        sl_candidates = [v for k,v in levels.items() if v > close]
-        sl = min(sl_candidates) if sl_candidates else close + diff*0.382
-        # TP = niveau Fib en-dessous
-        tp_candidates = [v for k,v in levels.items() if v < close]
-        tp = max(tp_candidates) if tp_candidates else close - diff*0.618
-    return {"sl": sl, "tp": tp, "swing_high": swing_high, "swing_low": swing_low, "levels": levels}
-
-def calc_lot_atr(df, balance, risk_pct, pair, action, fib_sl):
-    """
-    Calcule la taille du lot selon l'ATR et le niveau Fibonacci SL.
-    Plus la volatilite est haute -> lot plus petit.
-    """
-    is_xau = pair.startswith("XAU")
-    atr = df["atr"].iloc[-1] if "atr" in df.columns else 0
-    close = df["close"].iloc[-1]
-    risk_amt = balance * risk_pct  # 1% du capital
-
-    if fib_sl and fib_sl > 0:
-        sl_dist = abs(close - fib_sl)
-    else:
-        # Fallback: SL = 1.5x ATR
-        sl_dist = atr * 1.5 if atr > 0 else (close * 0.003)
-
-    if sl_dist == 0: return 0.01
-
-    if is_xau:
-        # XAU: 1 lot = 100 oz, valeur pip = 1$
-        lot = risk_amt / (sl_dist * 100)
-    else:
-        # Forex: 1 lot = 100 000 unités
-        lot = risk_amt / (sl_dist * 10000)
-
-    # Arrondir et limiter
-    lot = round(max(0.01, min(1.0, lot)), 2)
-    return lot
-
-# ─── Filtre News / Calendrier Économique ─────────────────────────
-NEWS_PAIRS_MAP = {
-    "XAU/EUR": ["USD","EUR","XAU"],
-    "XAU/USD": ["USD","XAU"],
-    "EUR/USD": ["USD","EUR"],
-    "GBP/USD": ["USD","GBP"],
-}
-
-def check_high_impact_news(pair, window_minutes=120):
-    """
-    Vérifie s'il y a une news haute importance dans les N prochaines minutes.
-    Source: ForexFactory RSS (gratuit, pas de clé API).
-    Retourne (True, description) si news dangereuse, (False, "") sinon.
-    """
-    currencies = NEWS_PAIRS_MAP.get(pair, [])
-    now = datetime.now(timezone.utc)
-    try:
-        url = "https://nfs.faireconomy.media/ff_calendar_thisweek.xml"
-        r = requests.get(url, timeout=10, headers={"User-Agent": "Mozilla/5.0"})
-        if r.status_code != 200:
-            return False, ""
-        root = ET.fromstring(r.content)
-        for event in root.findall("event"):
-            try:
-                currency = (event.findtext("country") or "").upper()
-                impact   = (event.findtext("impact") or "").lower()
-                title    = event.findtext("title") or ""
-                date_str = event.findtext("date") or ""
-                time_str = event.findtext("time") or ""
-                if impact not in ("high", "medium"):
-                    continue
-                if currency not in currencies and "XAU" not in currencies:
-                    continue
-                # Parser la date/heure
-                try:
-                    dt_str = f"{date_str} {time_str}".strip()
-                    event_dt = None
-                    for fmt in ["%m-%d-%Y %I:%M%p", "%Y-%m-%d %H:%M", "%m/%d/%Y %I:%M%p"]:
-                        try:
-                            event_dt = datetime.strptime(dt_str, fmt).replace(tzinfo=timezone.utc)
-                            break
-                        except:
-                            continue
-                    if event_dt is None:
-                        continue
-                    delta = (event_dt - now).total_seconds() / 60
-                    if -30 <= delta <= window_minutes:
-                        desc = f"{currency} {title} dans {int(delta)}min ({impact.upper()})"
-                        print(f"  ⚠ NEWS DETECTEE: {desc}")
-                        return True, desc
-                except Exception:
-                    continue
-            except Exception:
-                continue
-    except Exception as e:
-        print(f"  Calendrier éco non disponible: {e}")
-    return False, ""
-
 def is_market_open():
     now=datetime.now(timezone.utc);wd=now.weekday();h=now.hour
     if wd==5:return False
@@ -264,19 +133,6 @@ def compute_indicators(df):
     e12=c.ewm(span=12,adjust=False).mean();e26=c.ewm(span=26,adjust=False).mean()
     df["macd"]=e12-e26;df["macd_signal"]=df["macd"].ewm(span=9,adjust=False).mean()
     df["macd_hist"]=df["macd"]-df["macd_signal"];df["ma50"]=c.rolling(50).mean()
-    # EMA200 — tendance long terme
-    df["ema200"]=c.ewm(span=200,adjust=False).mean()
-    # Bollinger Bands (20 periodes, 2 ecarts-types)
-    df["bb_mid"]=c.rolling(20).mean()
-    df["bb_std"]=c.rolling(20).std()
-    df["bb_upper"]=df["bb_mid"]+2*df["bb_std"]
-    df["bb_lower"]=df["bb_mid"]-2*df["bb_std"]
-    df["bb_pct"]=(c-df["bb_lower"])/(df["bb_upper"]-df["bb_lower"])  # 0=bas 1=haut
-    # ATR (Average True Range) — mesure la volatilite
-    high=df["high"];low=df["low"]
-    tr=pd.concat([high-low,(high-c.shift()).abs(),(low-c.shift()).abs()],axis=1).max(axis=1)
-    df["atr"]=tr.rolling(14).mean()
-    df["atr_pct"]=df["atr"]/c*100  # ATR en % du prix
     return df
 
 def _parse_price(s):
@@ -306,15 +162,7 @@ def generate_chart(df,pair,tf,sltp=None,signal=""):
     gs=gridspec.GridSpec(3,1,figure=fig,height_ratios=[3,1,1],hspace=0.04,left=0.02,right=0.88,top=0.93,bottom=0.07)
     ax1=fig.add_subplot(gs[0]);ax2=fig.add_subplot(gs[1]);ax3=fig.add_subplot(gs[2])
     draw_candles(ax1,df)
-    ax1.plot(idx,df["ma50"],color=MA_COL,linewidth=1.2,zorder=4,label="MA50")
-    # EMA200
-    if "ema200" in df.columns:
-        ax1.plot(idx,df["ema200"],color="#a855f7",linewidth=1.0,linestyle="--",zorder=4,alpha=0.8)
-    # Bollinger Bands
-    if "bb_upper" in df.columns:
-        ax1.plot(idx,df["bb_upper"],color="#64748b",linewidth=0.6,linestyle=":",zorder=3,alpha=0.7)
-        ax1.plot(idx,df["bb_lower"],color="#64748b",linewidth=0.6,linestyle=":",zorder=3,alpha=0.7)
-        ax1.fill_between(idx,df["bb_lower"],df["bb_upper"],alpha=0.04,color="#64748b",zorder=1)
+    ax1.plot(idx,df["ma50"],color=MA_COL,linewidth=1.2,zorder=4)
     style_ax(ax1,label=f"{pair}  {TF_LABELS[tf]}")
     ax1.set_xlim(-1,n+1);ax1.autoscale(axis="y")
     # Lignes SL/TP annotees
@@ -352,75 +200,22 @@ def generate_chart(df,pair,tf,sltp=None,signal=""):
 
 def call_groq(img_bytes,df,pair,tf):
     last=df.iloc[-1];rsi=df["rsi"].iloc[-1]
-    macd_hist_last=df["macd_hist"].iloc[-1]
-    macd_hist_prev=df["macd_hist"].iloc[-2]
-    macd_hist_prev2=df["macd_hist"].iloc[-3] if len(df)>2 else macd_hist_prev
-    macd_col="vert" if macd_hist_last>=0 else "rouge"
-    macd_dir="haussier" if macd_hist_last>macd_hist_prev else "baissier"
-    macd_accel="accelere" if abs(macd_hist_last)>abs(macd_hist_prev)>abs(macd_hist_prev2) else "stable"
+    macd_col="vert" if df["macd_hist"].iloc[-1]>=0 else "rouge"
+    macd_dir="haussier" if df["macd_hist"].iloc[-1]>df["macd_hist"].iloc[-2] else "baissier"
     ma50=df["ma50"].iloc[-1];above=last["close"]>ma50
-    # Distance prix/MA50 en %
-    dist_ma50=abs(last["close"]-ma50)/ma50*100 if ma50>0 else 0
-    # Pente RSI sur 3 bougies
-    rsi_slope=df["rsi"].iloc[-1]-df["rsi"].iloc[-4] if len(df)>4 else 0
-    # Bougies consécutives dans la direction
-    closes=df["close"].values
-    bull_count=sum(1 for i in range(len(closes)-1,max(len(closes)-6,-1),-1) if closes[i]>closes[i-1])
-    bear_count=sum(1 for i in range(len(closes)-1,max(len(closes)-6,-1),-1) if closes[i]<closes[i-1])
-    # EMA200 + Bollinger
-    ema200=df["ema200"].iloc[-1] if "ema200" in df.columns else ma50
-    above_ema200=last["close"]>ema200
-    bb_upper=df["bb_upper"].iloc[-1] if "bb_upper" in df.columns else 0
-    bb_lower=df["bb_lower"].iloc[-1] if "bb_lower" in df.columns else 0
-    bb_pct=float(df["bb_pct"].iloc[-1]) if "bb_pct" in df.columns else 0.5
-    bb_zone="BAS<0.2 zone achat" if bb_pct<0.2 else "HAUT>0.8 zone vente" if bb_pct>0.8 else f"MILIEU {bb_pct:.2f}"
     is_xau=pair.startswith("XAU");risk=BALANCE*0.01;b64=base64.b64encode(img_bytes).decode()
     xau_r=f"""
-REGLES XAU: sl_pips/tp_pips=DOLLARS. SL M15:8-15$ H1:15-25$ H4:25-45$.
-Prix 2 decimales (ex:4412.30). INTERDIT prix<100. lot_micro=({risk:.2f}/(sl_pips*100))
-TP minimum = SL x 2 (ratio 1:2 minimum obligatoire)""" if is_xau else f"""
-REGLES FOREX: sl_pips/tp_pips=PIPS. SL M15:15-25p H1:30-50p H4:60-100p.
-lot_micro=({risk:.2f}/(sl_pips*10))
-TP minimum = SL x 2 (ratio 1:2 minimum obligatoire)"""
-    prompt=f"""Tu es un trader professionnel avec 20 ans d experience. Analyse {pair} {TF_LABELS[tf]} avec une PRECISION MAXIMALE.
-
-DONNEES TECHNIQUES:
-- Close={last['close']:.2f} | MA50={ma50:.2f} | Prix={'AU-DESSUS' if above else 'EN-DESSOUS'} MA50 ({dist_ma50:.1f}%)
-- EMA200={ema200:.2f} | Prix={'AU-DESSUS' if above_ema200 else 'EN-DESSOUS'} EMA200 (tendance long terme {'HAUSSIERE' if above_ema200 else 'BAISSIERE'})
-- Bollinger: Upper={bb_upper:.2f} Lower={bb_lower:.2f} Position={bb_zone}
-- RSI={rsi:.2f} | Pente RSI 4 bougies={rsi_slope:+.1f} | Zone={'SURVENTE<30' if rsi<30 else 'SURACHAT>70' if rsi>70 else 'NEUTRE 30-70'}
-- MACD histogramme={macd_col} {macd_dir} {macd_accel}
-- Momentum: {bull_count} bougies haussières / {bear_count} baissières sur 5 dernières
-
-CRITERES STRICTS BUY (besoin de 5 sur 6):
-1. RSI < 45 ET pente RSI positive (montant)
-2. MACD histogramme vert ET accelere OU vient de croiser
-3. Prix AU-DESSUS de la MA50
-4. Prix AU-DESSUS de l'EMA200 (tendance long terme haussière)
-5. Bollinger: prix en zone BAS (<0.3) — opportunité d'achat
-6. Au moins 3 bougies haussières sur les 5 dernières
-
-CRITERES STRICTS SELL (besoin de 5 sur 6):
-1. RSI > 55 ET pente RSI negative (descendant)
-2. MACD histogramme rouge ET accelere OU vient de croiser
-3. Prix EN-DESSOUS de la MA50
-4. Prix EN-DESSOUS de l'EMA200 (tendance long terme baissière)
-5. Bollinger: prix en zone HAUT (>0.7) — opportunité de vente
-6. Au moins 3 bougies baissières sur les 5 dernières
-
-WAIT si moins de 4 critères remplis, marché en range, ou Bollinger en zone neutre.
-
-SCORING (sois STRICT, penalise le moindre doute):
-- 85-100: Tous critères parfaits, tendance forte, momentum clair
-- 70-84: 4 critères OK mais 1 légèrement limite
-- 55-69: 3 critères OK, signal présent mais risqué
-- <55: WAIT obligatoire
-
-IMPORTANT: Mieux vaut dire WAIT que générer un mauvais signal. La précision prime sur la quantité.
-{xau_r}
-
-Réponds UNIQUEMENT en JSON valide sans markdown:
-{{"signal":"BUY|SELL|WAIT","score":0-100,"confiance":{{"niveau":"faible|moyen|eleve","raison":"..."}},"tendance":{{"direction":"haussiere|baissiere|laterale","force":"faible|moderee|forte","description":"..."}},"rsi":{{"valeur":{rsi:.2f},"zone":"survente|neutre|surachat","tendance":"montant|descendant|stable"}},"macd":{{"etat":"haussier|baissier|neutre","bougies_depuis":0}},"ma50":{{"position":"au-dessus|en-dessous|proche","condition":true}},"supports_resistances":{{"resistances":["R1: niveau","R2: niveau"],"supports":["S1: niveau","S2: niveau"]}},"sltp":{{"entree":"valeur","sl":"valeur","sl_pips":"valeur","tp":"valeur","tp_pips":"valeur","rr":"1:2","lot_micro":"valeur"}},"forces":"Force1\\nForce2","faiblesses":"Risque1\\nRisque2","analyse":"3 phrases precises","scenario_alternatif":"niveau exact invalidation","probabilite_signal":"XX% justification precise"}}"""
+REGLES XAU: sl_pips/tp_pips=DOLLARS. SL M15:5-12$ H1:10-20$ H4:20-40$.
+Prix 2 decimales (ex:4412.30). INTERDIT prix<100. lot_micro=({risk:.2f}/(sl_pips*100))""" if is_xau else f"""
+REGLES FOREX: sl_pips/tp_pips=PIPS. SL M15:15-25p H1:30-50p H4:50-100p.
+lot_micro=({risk:.2f}/(sl_pips*10))"""
+    prompt=f"""Analyste technique RSI+MACD+MA50. Paire {pair} {TF_LABELS[tf]}.
+BUY si 3 conditions sur 4: RSI<50 montant + MACD rouge->vert + prix>MA50 + momentum haussier
+SELL si 3 conditions sur 4: RSI>50 descendant + MACD vert->rouge + prix<MA50 + momentum baissier
+WAIT: moins de 3 conditions
+Donnees: Close={last['close']:.2f} RSI={rsi:.2f} MACD={macd_col} {macd_dir} MA50={ma50:.2f} Prix={'AU-DESSUS' if above else 'EN-DESSOUS'}{xau_r}
+JSON UNIQUEMENT sans markdown:
+{{"signal":"BUY|SELL|WAIT","score":0-100,"confiance":{{"niveau":"faible|moyen|eleve","raison":"..."}},"tendance":{{"direction":"haussiere|baissiere|laterale","force":"faible|moderee|forte","description":"..."}},"rsi":{{"valeur":{rsi:.2f},"zone":"survente|neutre|surachat","tendance":"montant|descendant|stable"}},"macd":{{"etat":"haussier|baissier|neutre","bougies_depuis":0}},"ma50":{{"position":"au-dessus|en-dessous|proche","condition":true}},"supports_resistances":{{"resistances":["R1: niveau","R2: niveau"],"supports":["S1: niveau","S2: niveau"]}},"sltp":{{"entree":"valeur","sl":"valeur","sl_pips":"valeur","tp":"valeur","tp_pips":"valeur","rr":"1:2","lot_micro":"valeur"}},"forces":"Force1\\nForce2","faiblesses":"Risque1\\nRisque2","analyse":"3 phrases","scenario_alternatif":"niveau invalidation","probabilite_signal":"XX% justification"}}"""
     payload={"model":MODEL,"max_tokens":1100,"messages":[{"role":"user","content":[{"type":"text","text":prompt},{"type":"image_url","image_url":{"url":f"data:image/png;base64,{b64}"}}]}]}
     hdrs={"Authorization":f"Bearer {GROQ_KEY}","Content-Type":"application/json"}
     for attempt in range(3):
@@ -440,12 +235,24 @@ def evaluate_consensus(results):
     s15=r15.get("signal","WAIT");s1=r1.get("signal","WAIT");s4=r4.get("signal","WAIT")
     sc1=int(r1.get("score",0));sc4=int(r4.get("score",0));sc15=int(r15.get("score",0))
     print(f"  M15={s15}({sc15}) | H1={s1}({sc1}) | H4={s4}({sc4})")
-    # Signal FORT : H1 + H4 alignes, scores eleves
+
+    # SIGNAL FORT : H1 + H4 alignes, les 2 scores >= MIN_SCORE
     if s1==s4 and s1 in ("BUY","SELL") and sc1>=MIN_SCORE and sc4>=MIN_SCORE:
         m15_ok=(s15==s1 and sc15>=50)
-        print(f"  SIGNAL FORT {'+ M15 confirme' if m15_ok else '(M15 neutre)'}")
+        print(f"  ✅ SIGNAL FORT {'+ M15' if m15_ok else ''}")
         return {"signal":s1,"score_h1":sc1,"score_h4":sc4,"m15_ok":m15_ok,"partial":False,"r15":r15,"r1":r1,"r4":r4}
-    print(f"  Pas de signal (H1={s1}/{sc1} H4={s4}/{sc4})")
+
+    # SIGNAL PARTIEL : H1 fort + H4 faible (score H4 >= 50 suffit)
+    if s1 in ("BUY","SELL") and sc1>=MIN_SCORE and sc4>=50:
+        print(f"  ⚠ SIGNAL PARTIEL (H4={s4}/{sc4} — position 50%)")
+        return {"signal":s1,"score_h1":sc1,"score_h4":sc4,"m15_ok":(s15==s1),"partial":True,"r15":r15,"r1":r1,"r4":r4}
+
+    # SIGNAL PARTIEL : H1 tres fort seul (score >= MIN_SCORE+15)
+    if s1 in ("BUY","SELL") and sc1>=MIN_SCORE+15 and s4=="WAIT":
+        print(f"  ⚠ SIGNAL H1 SEUL fort ({sc1}/100 — position 30%)")
+        return {"signal":s1,"score_h1":sc1,"score_h4":sc4,"m15_ok":(s15==s1),"partial":True,"r15":r15,"r1":r1,"r4":r4}
+
+    print(f"  ❌ Pas de signal (H1={s1}/{sc1} H4={s4}/{sc4})")
     return None
 
 def build_email(consensus,charts,pair):
@@ -558,55 +365,10 @@ body{{margin:0;padding:0;background:#f1f5f9;font-family:'Segoe UI',Arial,sans-se
 </div>
 <div class="footer">ChartAnalyzer Scanner v2 · {pair} · {now_str} · M15={r15.get('signal','?')} H1={sig}({sc1}) H4={r4.get('signal','?')}({sc4}) · Seuil={MIN_SCORE}/100</div>
 </div></body></html>"""
-    # ── Email mobile-friendly (résumé en haut) ──
-    mobile_html=f"""<!DOCTYPE html><html><body style="font-family:Arial;padding:16px;background:#f1f5f9">
-<div style="max-width:480px;margin:auto;background:{col};border-radius:16px;padding:24px;color:#fff;text-align:center">
-  <div style="font-size:3rem;font-weight:900;letter-spacing:2px">{ico} {sig} {arrow}</div>
-  <div style="font-size:1.4rem;font-weight:700;margin:8px 0">{pair}</div>
-  <div style="font-size:.9rem;opacity:.8">{now_str} · Score H1={sc1}/100 H4={sc4}/100</div>
-</div>
-<div style="max-width:480px;margin:12px auto;background:#fff;border-radius:16px;padding:20px;box-shadow:0 2px 12px rgba(0,0,0,.1)">
-  <div style="font-size:1rem;font-weight:900;color:#1e293b;margin-bottom:16px;text-align:center">
-    📲 COPIE CES VALEURS DANS MT5
-  </div>
-  <table style="width:100%;border-collapse:collapse;font-size:1rem">
-    <tr style="border-bottom:1px solid #f1f5f9">
-      <td style="padding:12px 8px;color:#64748b;font-weight:600">📥 ENTRÉE</td>
-      <td style="padding:12px 8px;font-weight:900;font-size:1.3rem;color:#1e293b;text-align:right">{entree}</td>
-    </tr>
-    <tr style="border-bottom:1px solid #f1f5f9;background:#fef2f2">
-      <td style="padding:12px 8px;color:#dc2626;font-weight:600">🛑 STOP LOSS</td>
-      <td style="padding:12px 8px;font-weight:900;font-size:1.3rem;color:#dc2626;text-align:right">{sl}</td>
-    </tr>
-    <tr style="border-bottom:1px solid #f1f5f9;background:#f0fdf4">
-      <td style="padding:12px 8px;color:#16a34a;font-weight:600">🎯 TAKE PROFIT</td>
-      <td style="padding:12px 8px;font-weight:900;font-size:1.3rem;color:#16a34a;text-align:right">{tp}</td>
-    </tr>
-    <tr style="border-bottom:1px solid #f1f5f9">
-      <td style="padding:12px 8px;color:#7c3aed;font-weight:600">📦 LOT</td>
-      <td style="padding:12px 8px;font-weight:900;font-size:1.3rem;color:#7c3aed;text-align:right">{lot}</td>
-    </tr>
-    <tr>
-      <td style="padding:12px 8px;color:#64748b;font-weight:600">⚖️ RATIO</td>
-      <td style="padding:12px 8px;font-weight:900;font-size:1.3rem;color:#1e293b;text-align:right">{rr}</td>
-    </tr>
-  </table>
-  <div style="margin-top:16px;padding:12px;background:#fffbeb;border-radius:10px;font-size:.8rem;color:#92400e;text-align:center">
-    ⚠️ Invalide si prix dépasse <b>{inv}</b>
-  </div>
-  <div style="margin-top:10px;padding:10px;background:#eff6ff;border-radius:10px;font-size:.75rem;color:#1e40af;text-align:center">
-    MT5 Mobile → {pair.replace('//','')} → Nouvel Ordre → Remplis les valeurs ci-dessus
-  </div>
-</div>
-</body></html>"""
-
     msg=MIMEMultipart("related")
     msg["Subject"]=f"{ico} [{sig}] {pair} — {sc1}/100 · {'M15+H1+H4' if m15_ok else 'H1+H4'} · {datetime.now(timezone.utc).strftime('%H:%M')} UTC"
     msg["From"]=EMAIL_FROM;msg["To"]=EMAIL_TO
-    alt=MIMEMultipart("alternative")
-    alt.attach(MIMEText(mobile_html,"html","utf-8"))  # Version mobile en premier
-    alt.attach(MIMEText(html,"html","utf-8"))          # Version complète en second
-    msg.attach(alt)
+    alt=MIMEMultipart("alternative");alt.attach(MIMEText(html,"html","utf-8"));msg.attach(alt)
     for tf,cid in [("15m","chart_m15"),("1h","chart_h1"),("4h","chart_h4")]:
         if tf in charts:
             img=MIMEImage(charts[tf],_subtype="png")
@@ -648,31 +410,6 @@ def analyze_pair(pair,state):
     sig=consensus["signal"]
     print(f"  SIGNAL: {sig} H1={consensus['score_h1']} H4={consensus['score_h4']}")
     if already_signaled(state,pair,sig):return state,False
-    # Filtre news haute importance
-    has_news, news_desc = check_high_impact_news(pair, window_minutes=120)
-    if has_news:
-        print(f"  ⛔ Signal bloqué par news: {news_desc}")
-        return state, False
-    # ── Fibonacci + ATR sur H1 ──
-    try:
-        df_h1=fetch_ohlcv(pair,"1h",CANDLES["1h"]);df_h1=compute_indicators(df_h1)
-        fib=calc_fibonacci_levels(df_h1, sig, lookback=50)
-        atr=df_h1["atr"].iloc[-1] if "atr" in df_h1.columns else 0
-        lot_atr=calc_lot_atr(df_h1, BALANCE, 0.01, pair, sig, fib.get("sl",0))
-        print(f"  Fibonacci SL={fib.get('sl',0):.2f} TP={fib.get('tp',0):.2f}")
-        print(f"  ATR={atr:.2f} | Lot ATR={lot_atr}")
-        # Enrichir sltp_h1 avec Fibonacci + ATR
-        sltp_h1["sl_fib"]  = str(round(fib.get("sl",0), 2))
-        sltp_h1["tp_fib"]  = str(round(fib.get("tp",0), 2))
-        sltp_h1["lot_atr"] = str(lot_atr)
-        sltp_h1["atr"]     = str(round(atr, 2))
-        sltp_h1["swing_high"] = str(round(fib.get("swing_high",0), 2))
-        sltp_h1["swing_low"]  = str(round(fib.get("swing_low",0), 2))
-        # Mettre à jour le lot dans consensus avec ATR
-        sltp_h1["lot_micro"] = str(lot_atr)
-        consensus["r1"]["sltp"] = sltp_h1
-    except Exception as e:
-        print(f"  Fibonacci/ATR erreur: {e}")
     print(f"\n  Graphiques annotes SL/TP...")
     charts={}
     for tf in TIMEFRAMES:
@@ -684,7 +421,6 @@ def analyze_pair(pair,state):
         msg=build_email(consensus,charts,pair);send_email(msg)
         state=mark_sent(state,pair,sig)
         write_signal_json(consensus,pair)
-        save_signal_history(consensus,pair)
     except Exception as e:print(f"  Erreur email: {e}");traceback.print_exc()
     return state,True
 
@@ -728,133 +464,7 @@ def main():
         except Exception as e:print(f"Erreur {pair}: {e}");traceback.print_exc()
         time.sleep(3)
     if GH_TOKEN:write_state(state,sha)
-    # Rapport hebdomadaire le vendredi soir
-    try: send_weekly_report()
-    except Exception as e: print(f"Rapport hebdo: {e}")
     print(f"\n{'='*55}\n  Scan termine — {sent_total} signal(s) sur {len(PAIRS)} paire(s)\n{'='*55}\n")
-
-
-
-# ─────────────────────────────────────────────────────────────
-#  RAPPORT HEBDOMADAIRE
-# ─────────────────────────────────────────────────────────────
-def save_signal_history(consensus: dict, pair: str, result: str = "pending"):
-    """Sauvegarde l'historique des signaux pour le rapport et le dashboard."""
-    if not GH_TOKEN or not GH_REPO: return
-    url = f"https://api.github.com/repos/{GH_REPO}/contents/signals_history.json"
-    hdrs = {"Authorization": f"token {GH_TOKEN}", "Accept": "application/vnd.github.v3+json"}
-    history = []
-    sha = None
-    try:
-        r = requests.get(url, headers=hdrs, timeout=10)
-        if r.status_code == 200:
-            d = r.json()
-            sha = d["sha"]
-            history = json.loads(base64.b64decode(d["content"]).decode())
-    except: pass
-    sig = consensus["signal"]
-    sltp = consensus["r1"].get("sltp", {})
-    history.append({
-        "date":      datetime.now(timezone.utc).strftime("%Y-%m-%d"),
-        "time":      datetime.now(timezone.utc).strftime("%H:%M"),
-        "pair":      pair,
-        "signal":    sig,
-        "score_h1":  consensus["score_h1"],
-        "score_h4":  consensus["score_h4"],
-        "entry":     sltp.get("entree", "0"),
-        "sl":        sltp.get("sl", "0"),
-        "tp":        sltp.get("tp", "0"),
-        "lot":       sltp.get("lot_micro", "0.01"),
-        "rr":        sltp.get("rr", "1:2"),
-        "result":    result
-    })
-    # Garder 90 jours max
-    history = history[-500:]
-    content_b64 = base64.b64encode(json.dumps(history, indent=2).encode()).decode()
-    body = {"message": f"[history] {sig} {pair}", "content": content_b64}
-    if sha: body["sha"] = sha
-    try: requests.put(url, headers=hdrs, json=body, timeout=10)
-    except Exception as e: print(f"  History: {e}")
-
-def send_weekly_report():
-    """Envoie un rapport hebdomadaire chaque vendredi soir."""
-    now = datetime.now(timezone.utc)
-    if now.weekday() != 4 or now.hour < 20: return  # Vendredi après 20h UTC
-    if not GH_TOKEN or not GH_REPO: return
-    # Lire l'historique
-    url = f"https://api.github.com/repos/{GH_REPO}/contents/signals_history.json"
-    hdrs = {"Authorization": f"token {GH_TOKEN}", "Accept": "application/vnd.github.v3+json"}
-    try:
-        r = requests.get(url, headers=hdrs, timeout=10)
-        if r.status_code != 200: return
-        history = json.loads(base64.b64decode(r.json()["content"]).decode())
-    except: return
-    # Filtrer la semaine
-    week_ago = (now - timedelta(days=7)).strftime("%Y-%m-%d")
-    week = [s for s in history if s.get("date","") >= week_ago]
-    if not week: return
-    total = len(week)
-    pairs_count = {}
-    for s in week:
-        p = s.get("pair","?")
-        pairs_count[p] = pairs_count.get(p, 0) + 1
-    best_pair = max(pairs_count, key=pairs_count.get) if pairs_count else "—"
-    rows = "".join(f"""<tr style="border-bottom:1px solid #f1f5f9">
-      <td style="padding:8px;font-size:.8rem">{s.get('date','')} {s.get('time','')}</td>
-      <td style="padding:8px;font-size:.8rem;font-weight:700">{s.get('pair','')}</td>
-      <td style="padding:8px;font-size:.8rem;color:{'#2563eb' if s.get('signal')=='BUY' else '#dc2626'};font-weight:700">{s.get('signal','')}</td>
-      <td style="padding:8px;font-size:.8rem">{s.get('score_h1','')}/100</td>
-      <td style="padding:8px;font-size:.8rem">{s.get('entry','')}</td>
-      <td style="padding:8px;font-size:.8rem;color:#dc2626">{s.get('sl','')}</td>
-      <td style="padding:8px;font-size:.8rem;color:#16a34a">{s.get('tp','')}</td>
-    </tr>""" for s in week[-20:])
-    html = f"""<!DOCTYPE html><html><body style="font-family:Arial;padding:16px;background:#f1f5f9">
-<div style="max-width:660px;margin:auto;background:#1e293b;border-radius:16px;padding:24px;color:#fff;text-align:center">
-  <div style="font-size:1.8rem;font-weight:900">📊 Rapport Hebdomadaire</div>
-  <div style="font-size:.9rem;opacity:.7;margin-top:6px">Semaine du {week_ago} au {now.strftime('%Y-%m-%d')}</div>
-</div>
-<div style="max-width:660px;margin:12px auto;background:#fff;border-radius:16px;padding:20px;box-shadow:0 2px 12px rgba(0,0,0,.1)">
-  <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:12px;margin-bottom:20px">
-    <div style="background:#eff6ff;border-radius:12px;padding:16px;text-align:center">
-      <div style="font-size:2rem;font-weight:900;color:#2563eb">{total}</div>
-      <div style="font-size:.75rem;color:#64748b;margin-top:4px">SIGNAUX</div>
-    </div>
-    <div style="background:#f0fdf4;border-radius:12px;padding:16px;text-align:center">
-      <div style="font-size:2rem;font-weight:900;color:#16a34a">{len([s for s in week if s.get('signal')=='BUY'])}</div>
-      <div style="font-size:.75rem;color:#64748b;margin-top:4px">BUY</div>
-    </div>
-    <div style="background:#fef2f2;border-radius:12px;padding:16px;text-align:center">
-      <div style="font-size:2rem;font-weight:900;color:#dc2626">{len([s for s in week if s.get('signal')=='SELL'])}</div>
-      <div style="font-size:.75rem;color:#64748b;margin-top:4px">SELL</div>
-    </div>
-  </div>
-  <div style="background:#f8fafc;border-radius:10px;padding:12px;margin-bottom:16px;font-size:.85rem;color:#1e293b">
-    🏆 Paire la plus active : <b>{best_pair}</b> ({pairs_count.get(best_pair,0)} signaux)
-  </div>
-  <table style="width:100%;border-collapse:collapse">
-    <tr style="background:#f8fafc">
-      <th style="padding:8px;font-size:.72rem;color:#64748b;text-align:left">Date</th>
-      <th style="padding:8px;font-size:.72rem;color:#64748b;text-align:left">Paire</th>
-      <th style="padding:8px;font-size:.72rem;color:#64748b;text-align:left">Signal</th>
-      <th style="padding:8px;font-size:.72rem;color:#64748b;text-align:left">Score</th>
-      <th style="padding:8px;font-size:.72rem;color:#64748b;text-align:left">Entrée</th>
-      <th style="padding:8px;font-size:.72rem;color:#64748b;text-align:left">SL</th>
-      <th style="padding:8px;font-size:.72rem;color:#64748b;text-align:left">TP</th>
-    </tr>
-    {rows}
-  </table>
-</div>
-</body></html>"""
-    msg = MIMEMultipart("alternative")
-    msg["Subject"] = f"📊 Rapport Hebdomadaire ChartAnalyzer — {total} signaux cette semaine"
-    msg["From"] = EMAIL_FROM
-    msg["To"]   = EMAIL_TO
-    msg.attach(MIMEText(html, "html", "utf-8"))
-    try:
-        send_email(msg)
-        print("  Rapport hebdomadaire envoyé !")
-    except Exception as e:
-        print(f"  Erreur rapport: {e}")
 
 if __name__=="__main__":
     main()
