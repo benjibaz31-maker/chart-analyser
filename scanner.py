@@ -252,7 +252,12 @@ def evaluate_consensus(results):
         print(f"  ⚠ SIGNAL H1 SEUL fort ({sc1}/100 — position 30%)")
         return {"signal":s1,"score_h1":sc1,"score_h4":sc4,"m15_ok":(s15==s1),"partial":True,"r15":r15,"r1":r1,"r4":r4}
 
-    print(f"  ❌ Pas de signal (H1={s1}/{sc1} H4={s4}/{sc4})")
+    # SIGNAL H4 : H4 tres fort (>=70) + M15 confirme, meme si H1 en WAIT
+    if s4 in ("BUY","SELL") and sc4>=70 and s15==s4:
+        print(f"  ⚠ SIGNAL H4+M15 ({s4} H4={sc4} M15={sc15} — position 30%)")
+        return {"signal":s4,"score_h1":sc1,"score_h4":sc4,"m15_ok":True,"partial":True,"r15":r15,"r1":r1,"r4":r4}
+
+    print(f"  ❌ Pas de signal (H1={s1}/{sc1} H4={s4}/{sc4} M15={s15}/{sc15})")
     return None
 
 def build_email(consensus,charts,pair):
