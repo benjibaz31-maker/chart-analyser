@@ -114,6 +114,17 @@ def fetch_ohlcv(pair,interval,n):
             if merged.empty:raise ValueError(f"Alignement impossible GC=F/{quote}USD")
             for c in ["open","high","low","close"]:merged[c]/=merged["fx"]
             data=merged[["open","high","low","close"]].reset_index()
+    elif pair.startswith("XAG"):
+        quote=pair.split("/")[1]
+        print(f"    SI=F Silver [{yf_iv} {period}]")
+        xag=_dl_yf("SI=F",period,yf_iv).set_index("date").sort_index()
+        if quote=="USD":
+            data=xag.reset_index()
+        else:
+            fx=_dl_yf(f"{quote}USD=X",period,yf_iv)[["date","close"]].rename(columns={"close":"fx"}).set_index("date").sort_index()
+            merged=xag.join(fx,how="inner")
+            for c in ["open","high","low","close"]:merged[c]/=merged["fx"]
+            data=merged[["open","high","low","close"]].reset_index()
     else:
         tmap={"EUR/USD":"EURUSD=X","GBP/USD":"GBPUSD=X","USD/JPY":"USDJPY=X","AUD/USD":"AUDUSD=X"}
         ticker=tmap.get(pair,pair.replace("/","")+"=X")
