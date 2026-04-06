@@ -114,17 +114,6 @@ def fetch_ohlcv(pair,interval,n):
             if merged.empty:raise ValueError(f"Alignement impossible GC=F/{quote}USD")
             for c in ["open","high","low","close"]:merged[c]/=merged["fx"]
             data=merged[["open","high","low","close"]].reset_index()
-    elif pair.startswith("XAG"):
-        quote=pair.split("/")[1]
-        print(f"    SI=F Silver [{yf_iv} {period}]")
-        xag=_dl_yf("SI=F",period,yf_iv).set_index("date").sort_index()
-        if quote=="USD":
-            data=xag.reset_index()
-        else:
-            fx=_dl_yf(f"{quote}USD=X",period,yf_iv)[["date","close"]].rename(columns={"close":"fx"}).set_index("date").sort_index()
-            merged=xag.join(fx,how="inner")
-            for c in ["open","high","low","close"]:merged[c]/=merged["fx"]
-            data=merged[["open","high","low","close"]].reset_index()
     else:
         tmap={"EUR/USD":"EURUSD=X","GBP/USD":"GBPUSD=X","USD/JPY":"USDJPY=X","AUD/USD":"AUDUSD=X"}
         ticker=tmap.get(pair,pair.replace("/","")+"=X")
@@ -221,9 +210,9 @@ Prix 2 decimales (ex:4412.30). INTERDIT prix<100. lot_micro=({risk:.2f}/(sl_pips
 REGLES FOREX: sl_pips/tp_pips=PIPS. SL M15:15-25p H1:30-50p H4:50-100p.
 lot_micro=({risk:.2f}/(sl_pips*10))"""
     prompt=f"""Analyste technique RSI+MACD+MA50. Paire {pair} {TF_LABELS[tf]}.
-BUY si 3 conditions sur 4: RSI<50 montant + MACD rouge->vert + prix>MA50 + momentum haussier
-SELL si 3 conditions sur 4: RSI>50 descendant + MACD vert->rouge + prix<MA50 + momentum baissier
-WAIT: moins de 3 conditions
+BUY: RSI<50 montant + MACD rouge->vert + prix>MA50
+SELL: RSI>50 descendant + MACD vert->rouge + prix<MA50
+WAIT: <2 conditions
 Donnees: Close={last['close']:.2f} RSI={rsi:.2f} MACD={macd_col} {macd_dir} MA50={ma50:.2f} Prix={'AU-DESSUS' if above else 'EN-DESSOUS'}{xau_r}
 JSON UNIQUEMENT sans markdown:
 {{"signal":"BUY|SELL|WAIT","score":0-100,"confiance":{{"niveau":"faible|moyen|eleve","raison":"..."}},"tendance":{{"direction":"haussiere|baissiere|laterale","force":"faible|moderee|forte","description":"..."}},"rsi":{{"valeur":{rsi:.2f},"zone":"survente|neutre|surachat","tendance":"montant|descendant|stable"}},"macd":{{"etat":"haussier|baissier|neutre","bougies_depuis":0}},"ma50":{{"position":"au-dessus|en-dessous|proche","condition":true}},"supports_resistances":{{"resistances":["R1: niveau","R2: niveau"],"supports":["S1: niveau","S2: niveau"]}},"sltp":{{"entree":"valeur","sl":"valeur","sl_pips":"valeur","tp":"valeur","tp_pips":"valeur","rr":"1:2","lot_micro":"valeur"}},"forces":"Force1\\nForce2","faiblesses":"Risque1\\nRisque2","analyse":"3 phrases","scenario_alternatif":"niveau invalidation","probabilite_signal":"XX% justification"}}"""
@@ -247,28 +236,22 @@ def evaluate_consensus(results):
     sc1=int(r1.get("score",0));sc4=int(r4.get("score",0));sc15=int(r15.get("score",0))
     print(f"  M15={s15}({sc15}) | H1={s1}({sc1}) | H4={s4}({sc4})")
 
-    # SIGNAL FORT : H1 + H4 alignes, les 2 scores >= MIN_SCORE
+    # SIGNAL FORT : H1 + H4 alignes, scores >= MIN_SCORE
     if s1==s4 and s1 in ("BUY","SELL") and sc1>=MIN_SCORE and sc4>=MIN_SCORE:
-        m15_ok=(s15==s1 and sc15>=50)
-        print(f"  ✅ SIGNAL FORT {'+ M15' if m15_ok else ''}")
-        return {"signal":s1,"score_h1":sc1,"score_h4":sc4,"m15_ok":m15_ok,"partial":False,"r15":r15,"r1":r1,"r4":r4}
+        print(f"  SIGNAL FORT H1+H4")
+        return {"signal":s1,"score_h1":sc1,"score_h4":sc4,"m15_ok":(s15==s1),"partial":False,"r15":r15,"r1":r1,"r4":r4}
 
-    # SIGNAL PARTIEL : H1 fort + H4 faible (score H4 >= 50 suffit)
+    # SIGNAL PARTIEL : H1 >= MIN_SCORE + H4 >= 50
     if s1 in ("BUY","SELL") and sc1>=MIN_SCORE and sc4>=50:
-        print(f"  ⚠ SIGNAL PARTIEL (H4={s4}/{sc4} — position 50%)")
+        print(f"  SIGNAL PARTIEL H1+H4 partiel")
         return {"signal":s1,"score_h1":sc1,"score_h4":sc4,"m15_ok":(s15==s1),"partial":True,"r15":r15,"r1":r1,"r4":r4}
 
-    # SIGNAL PARTIEL : H1 tres fort seul (score >= MIN_SCORE+15)
-    if s1 in ("BUY","SELL") and sc1>=MIN_SCORE+15 and s4=="WAIT":
-        print(f"  ⚠ SIGNAL H1 SEUL fort ({sc1}/100 — position 30%)")
-        return {"signal":s1,"score_h1":sc1,"score_h4":sc4,"m15_ok":(s15==s1),"partial":True,"r15":r15,"r1":r1,"r4":r4}
-
-    # SIGNAL H4 : H4 tres fort (>=70) + M15 confirme, meme si H1 en WAIT
-    if s4 in ("BUY","SELL") and sc4>=70 and s15==s4:
-        print(f"  ⚠ SIGNAL H4+M15 ({s4} H4={sc4} M15={sc15} — position 30%)")
+    # SIGNAL H4+M15 : H4 fort + M15 confirme + H1 >= 40 minimum
+    if s4 in ("BUY","SELL") and sc4>=70 and s15==s4 and sc1>=40:
+        print(f"  SIGNAL H4+M15 (H4={sc4} M15={sc15} H1={sc1}>=40)")
         return {"signal":s4,"score_h1":sc1,"score_h4":sc4,"m15_ok":True,"partial":True,"r15":r15,"r1":r1,"r4":r4}
 
-    print(f"  ❌ Pas de signal (H1={s1}/{sc1} H4={s4}/{sc4} M15={s15}/{sc15})")
+    print(f"  Pas de signal (H1={s1}/{sc1} H4={s4}/{sc4} M15={s15}/{sc15})")
     return None
 
 def build_email(consensus,charts,pair):
