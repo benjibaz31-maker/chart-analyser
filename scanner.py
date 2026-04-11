@@ -236,28 +236,28 @@ def evaluate_consensus(results):
     sc1=int(r1.get("score",0));sc4=int(r4.get("score",0));sc15=int(r15.get("score",0))
     print(f"  M15={s15}({sc15}) | H1={s1}({sc1}) | H4={s4}({sc4})")
 
-    # REGLE 1 — Bloquer H1 vs H4 contradictoires (directions opposees)
+    # REGLE 1 — Bloquer si H1 et H4 en directions opposees (signal contradictoire)
     if s1 in ("BUY","SELL") and s4 in ("BUY","SELL") and s1 != s4:
-        print(f"  BLOQUE: H1={s1} oppose a H4={s4} — signal dangereux")
+        print(f"  ❌ Signal contradictoire bloque (H1={s1} vs H4={s4})")
         return None
 
-    # REGLE 2 — H1 doit etre BUY ou SELL avec score >= MIN_SCORE
-    if s1 not in ("BUY","SELL") or sc1 < MIN_SCORE:
-        print(f"  BLOQUE: H1={s1}({sc1}) insuffisant (min={MIN_SCORE})")
+    # REGLE 2 — Bloquer si score H1 < MIN_SCORE (signal trop faible)
+    if s1 in ("BUY","SELL") and sc1 < MIN_SCORE:
+        print(f"  ❌ Score H1 trop faible ({sc1} < {MIN_SCORE})")
         return None
 
-    # SIGNAL FORT : H1 + H4 alignes, les 2 scores >= MIN_SCORE
-    if s1==s4 and sc4>=MIN_SCORE:
+    # SIGNAL FORT — H1 + H4 alignes, scores suffisants
+    if s1==s4 and s1 in ("BUY","SELL") and sc1>=MIN_SCORE and sc4>=MIN_SCORE:
         m15_ok=(s15==s1 and sc15>=50)
-        print(f"  SIGNAL FORT {'+ M15' if m15_ok else ''} H1={sc1} H4={sc4}")
+        print(f"  ✅ SIGNAL FORT H1+H4 alignes {'+ M15' if m15_ok else ''}")
         return {"signal":s1,"score_h1":sc1,"score_h4":sc4,"m15_ok":m15_ok,"partial":False,"r15":r15,"r1":r1,"r4":r4}
 
-    # SIGNAL PARTIEL : H1 fort + H4 en WAIT (score H4 >= 50)
-    if s4=="WAIT" and sc4>=50:
-        print(f"  SIGNAL PARTIEL H1={sc1} H4=WAIT({sc4}) — position 50%")
+    # SIGNAL PARTIEL — H1 fort + H4 en WAIT (pas oppose)
+    if s1 in ("BUY","SELL") and s4=="WAIT" and sc1>=MIN_SCORE and sc4>=50:
+        print(f"  ⚠️ SIGNAL PARTIEL (H1={s1}/{sc1} H4=WAIT/{sc4}) — lot 50%")
         return {"signal":s1,"score_h1":sc1,"score_h4":sc4,"m15_ok":(s15==s1),"partial":True,"r15":r15,"r1":r1,"r4":r4}
 
-    print(f"  PAS DE SIGNAL H1={s1}({sc1}) H4={s4}({sc4})")
+    print(f"  ❌ Pas de signal valide")
     return None
 
 def build_email(consensus,charts,pair):
@@ -543,3 +543,4 @@ def write_signal_json(consensus: dict, pair: str):
             print(f"  ❌ Erreur écriture signal.json : {r.status_code} {r.text[:100]}")
     except Exception as e:
         print(f"  ❌ Exception signal.json : {e}")
+        
