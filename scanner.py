@@ -13,6 +13,8 @@ from io import BytesIO
 
 import requests
 import numpy as np
+import performance_engine as perf_engine
+
 import pandas as pd
 import yfinance as yf
 
@@ -233,31 +235,12 @@ JSON UNIQUEMENT sans markdown:
 def evaluate_consensus(results):
     r15=results.get("15m",{});r1=results.get("1h",{});r4=results.get("4h",{})
     s15=r15.get("signal","WAIT");s1=r1.get("signal","WAIT");s4=r4.get("signal","WAIT")
-    sc1=int(r1.get("score",0));sc4=int(r4.get("score",0));sc15=int(r15.get("score",0))
-    print(f"  M15={s15}({sc15}) | H1={s1}({sc1}) | H4={s4}({sc4})")
-
-    # REGLE 1 — Bloquer si H1 et H4 en directions opposees (signal contradictoire)
-    if s1 in ("BUY","SELL") and s4 in ("BUY","SELL") and s1 != s4:
-        print(f"  ❌ Signal contradictoire bloque (H1={s1} vs H4={s4})")
-        return None
-
-    # REGLE 2 — Bloquer si score H1 < MIN_SCORE (signal trop faible)
-    if s1 in ("BUY","SELL") and sc1 < MIN_SCORE:
-        print(f"  ❌ Score H1 trop faible ({sc1} < {MIN_SCORE})")
-        return None
-
-    # SIGNAL FORT — H1 + H4 alignes, scores suffisants
-    if s1==s4 and s1 in ("BUY","SELL") and sc1>=MIN_SCORE and sc4>=MIN_SCORE:
-        m15_ok=(s15==s1 and sc15>=50)
-        print(f"  ✅ SIGNAL FORT H1+H4 alignes {'+ M15' if m15_ok else ''}")
-        return {"signal":s1,"score_h1":sc1,"score_h4":sc4,"m15_ok":m15_ok,"partial":False,"r15":r15,"r1":r1,"r4":r4}
-
-    # SIGNAL PARTIEL — H1 fort + H4 en WAIT (pas oppose)
-    if s1 in ("BUY","SELL") and s4=="WAIT" and sc1>=MIN_SCORE and sc4>=50:
-        print(f"  ⚠️ SIGNAL PARTIEL (H1={s1}/{sc1} H4=WAIT/{sc4}) — lot 50%")
-        return {"signal":s1,"score_h1":sc1,"score_h4":sc4,"m15_ok":(s15==s1),"partial":True,"r15":r15,"r1":r1,"r4":r4}
-
-    print(f"  ❌ Pas de signal valide")
+    sc1=int(r1.get("score",0));sc4=int(r4.get("score",0))
+    print(f"  M15={s15} | H1={s1}({sc1}) | H4={s4}({sc4})")
+    if s1==s4 and s1 in ("BUY","SELL") and sc1>=MIN_SCORE:
+        return {"signal":s1,"score_h1":sc1,"score_h4":sc4,"m15_ok":s15==s1,"partial":False,"r15":r15,"r1":r1,"r4":r4}
+    if s1 in ("BUY","SELL") and s4 in ("WAIT",s1) and sc1>=MIN_SCORE+10:
+        return {"signal":s1,"score_h1":sc1,"score_h4":sc4,"m15_ok":s15==s1,"partial":True,"r15":r15,"r1":r1,"r4":r4}
     return None
 
 def build_email(consensus,charts,pair):
@@ -415,6 +398,22 @@ def analyze_pair(pair,state):
     sig=consensus["signal"]
     print(f"  SIGNAL: {sig} H1={consensus['score_h1']} H4={consensus['score_h4']}")
     if already_signaled(state,pair,sig):return state,False
+    # Mini backtest : vérifier l'historique similaire
+    try:
+        hist_bt, _ = perf_engine._read_history(GH_TOKEN, GH_REPO)
+        wr_bt, nb_bt, reco_bt = perf_engine.mini_backtest(
+            pair.replace("/",""), sig, consensus["score_h1"], hist_bt
+        )
+        if reco_bt == "SKIP":
+            print(f"  [perf] ❌ Backtest défavorable (WR={wr_bt}% sur {nb_bt} trades) — signal bloqué")
+            return state, False
+        elif reco_bt == "CAUTION":
+            print(f"  [perf] ⚠️ Backtest moyen (WR={wr_bt}% sur {nb_bt} trades) — lot réduit 50%")
+            consensus["partial"] = True
+        elif reco_bt == "GO":
+            print(f"  [perf] ✅ Backtest favorable (WR={wr_bt}% sur {nb_bt} trades)")
+    except Exception as ep:
+        print(f"  [perf] mini_backtest: {ep}")
     print(f"\n  Graphiques annotes SL/TP...")
     charts={}
     for tf in TIMEFRAMES:
@@ -426,6 +425,11 @@ def analyze_pair(pair,state):
         msg=build_email(consensus,charts,pair);send_email(msg)
         state=mark_sent(state,pair,sig)
         write_signal_json(consensus,pair)
+        # Enregistrer dans l'historique de performance
+        try:
+            perf_engine.save_signal(consensus, pair, GH_TOKEN, GH_REPO)
+        except Exception as ep:
+            print(f"  [perf] save_signal: {ep}")
     except Exception as e:print(f"  Erreur email: {e}");traceback.print_exc()
     return state,True
 
@@ -469,6 +473,11 @@ def main():
         except Exception as e:print(f"Erreur {pair}: {e}");traceback.print_exc()
         time.sleep(3)
     if GH_TOKEN:write_state(state,sha)
+    # Moteur de performance : mise à jour résultats + analyse
+    try:
+        perf_engine.run(GH_TOKEN, GH_REPO, MIN_SCORE)
+    except Exception as ep:
+        print(f"  [perf] run: {ep}")
     print(f"\n{'='*55}\n  Scan termine — {sent_total} signal(s) sur {len(PAIRS)} paire(s)\n{'='*55}\n")
 
 if __name__=="__main__":
@@ -543,4 +552,3 @@ def write_signal_json(consensus: dict, pair: str):
             print(f"  ❌ Erreur écriture signal.json : {r.status_code} {r.text[:100]}")
     except Exception as e:
         print(f"  ❌ Exception signal.json : {e}")
-        
