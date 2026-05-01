@@ -32,11 +32,11 @@
     "sent_at": "09:33 UTC"
   },
   "XAU/EUR_2026-05-01": {
-    "signal": "BUY",
-    "sent_at": "05:01 UTC"
+    "signal": "SELL",
+    "sent_at": "17:11 UTC"
   },
   "XAU/USD_2026-05-01": {
-    "signal": "BUY",
-    "sent_at": "07:35 UTC"
+    "signal": "SELL",
+    "sent_at": "17:12 UTC"
   }
 }
