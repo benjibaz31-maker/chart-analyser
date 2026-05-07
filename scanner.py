@@ -167,7 +167,6 @@ def generate_chart(df,pair,tf,sltp=None,signal=""):
     ax1.plot(idx,df["ma50"],color=MA_COL,linewidth=1.2,zorder=4)
     style_ax(ax1,label=f"{pair}  {TF_LABELS[tf]}")
     ax1.set_xlim(-1,n+1);ax1.autoscale(axis="y")
-    # Lignes SL/TP annotees
     if sltp:
         entry=_parse_price(sltp.get("entree"));sl_p=_parse_price(sltp.get("sl"));tp_p=_parse_price(sltp.get("tp"))
         pmin=df["low"].min();pmax=df["high"].max()
@@ -232,15 +231,40 @@ JSON UNIQUEMENT sans markdown:
             if attempt<2:time.sleep(5*(attempt+1))
     return {}
 
+# ──────────────────────────────────────────────────────────────
+#  CORRECTION PRINCIPALE : evaluate_consensus
+#  — sc4 est maintenant vérifié dans la condition forte
+#  — logs détaillés pour chaque cas
+# ──────────────────────────────────────────────────────────────
 def evaluate_consensus(results):
     r15=results.get("15m",{});r1=results.get("1h",{});r4=results.get("4h",{})
     s15=r15.get("signal","WAIT");s1=r1.get("signal","WAIT");s4=r4.get("signal","WAIT")
     sc1=int(r1.get("score",0));sc4=int(r4.get("score",0))
-    print(f"  M15={s15} | H1={s1}({sc1}) | H4={s4}({sc4})")
-    if s1==s4 and s1 in ("BUY","SELL") and sc1>=MIN_SCORE:
-        return {"signal":s1,"score_h1":sc1,"score_h4":sc4,"m15_ok":s15==s1,"partial":False,"r15":r15,"r1":r1,"r4":r4}
+    print(f"  M15={s15} | H1={s1}({sc1}) | H4={s4}({sc4}) | MIN_SCORE={MIN_SCORE}")
+
+    # ── Signal FORT : H1+H4 alignés ET les deux >= MIN_SCORE ──
+    if s1==s4 and s1 in ("BUY","SELL") and sc1>=MIN_SCORE and sc4>=MIN_SCORE:
+        print(f"  ✅ Signal FORT : H1={sc1} H4={sc4} >= {MIN_SCORE} — signal.json sera écrit")
+        return {"signal":s1,"score_h1":sc1,"score_h4":sc4,
+                "m15_ok":s15==s1,"partial":False,
+                "r15":r15,"r1":r1,"r4":r4}
+
+    # ── Signal PARTIEL : H1 très fort (>=MIN_SCORE+10) mais H4 en WAIT ──
     if s1 in ("BUY","SELL") and s4 in ("WAIT",s1) and sc1>=MIN_SCORE+10:
-        return {"signal":s1,"score_h1":sc1,"score_h4":sc4,"m15_ok":s15==s1,"partial":True,"r15":r15,"r1":r1,"r4":r4}
+        print(f"  ⚠️ Signal PARTIEL : H1={sc1}>={MIN_SCORE+10} mais H4={sc4} en WAIT — lot réduit 50%")
+        return {"signal":s1,"score_h1":sc1,"score_h4":sc4,
+                "m15_ok":s15==s1,"partial":True,
+                "r15":r15,"r1":r1,"r4":r4}
+
+    # ── Aucun signal ──
+    if s1 not in ("BUY","SELL"):
+        print(f"  ❌ Pas de signal : H1={s1} — pas de direction claire")
+    elif s1!=s4:
+        print(f"  ❌ Pas de signal : H1={s1} vs H4={s4} — directions opposées")
+    elif sc1<MIN_SCORE:
+        print(f"  ❌ Pas de signal : H1 score={sc1} < {MIN_SCORE}")
+    elif sc4<MIN_SCORE:
+        print(f"  ❌ Pas de signal : H4 score={sc4} < {MIN_SCORE} ← BLOQUANT")
     return None
 
 def build_email(consensus,charts,pair):
@@ -398,7 +422,6 @@ def analyze_pair(pair,state):
     sig=consensus["signal"]
     print(f"  SIGNAL: {sig} H1={consensus['score_h1']} H4={consensus['score_h4']}")
     if already_signaled(state,pair,sig):return state,False
-    # Mini backtest : vérifier l'historique similaire
     try:
         hist_bt, _ = perf_engine._read_history(GH_TOKEN, GH_REPO)
         wr_bt, nb_bt, reco_bt = perf_engine.mini_backtest(
@@ -425,7 +448,6 @@ def analyze_pair(pair,state):
         msg=build_email(consensus,charts,pair);send_email(msg)
         state=mark_sent(state,pair,sig)
         write_signal_json(consensus,pair)
-        # Enregistrer dans l'historique de performance
         try:
             perf_engine.save_signal(consensus, pair, GH_TOKEN, GH_REPO)
         except Exception as ep:
@@ -434,7 +456,6 @@ def analyze_pair(pair,state):
     return state,True
 
 def send_test_email():
-    """Envoie un email de test pour vérifier la configuration SMTP."""
     print("\n  MODE TEST EMAIL — envoi d un email de test...")
     msg = MIMEMultipart("alternative")
     msg["Subject"] = "✅ [TEST] ChartAnalyzer Scanner — Email OK"
@@ -473,7 +494,6 @@ def main():
         except Exception as e:print(f"Erreur {pair}: {e}");traceback.print_exc()
         time.sleep(3)
     if GH_TOKEN:write_state(state,sha)
-    # Moteur de performance : mise à jour résultats + analyse
     try:
         perf_engine.run(GH_TOKEN, GH_REPO, MIN_SCORE)
     except Exception as ep:
@@ -483,24 +503,15 @@ def main():
 if __name__=="__main__":
     main()
 
-
-# ─────────────────────────────────────────────────────────────
-#  ÉCRITURE DU SIGNAL DANS GITHUB (pour l'EA MT5)
-# ─────────────────────────────────────────────────────────────
 def write_signal_json(consensus: dict, pair: str):
-    """Écrit signal.json dans le repo GitHub pour que l'EA MT5 puisse le lire."""
     if not GH_TOKEN or not GH_REPO:
         print("  ⚠ GITHUB_TOKEN manquant — signal.json non écrit")
         return
-
     sig   = consensus["signal"]
     r1    = consensus["r1"]
     sltp  = r1.get("sltp", {})
     now   = datetime.now(timezone.utc)
-
-    # Nettoyer le nom de paire pour MT5 (XAU/EUR → XAUEUR)
     pair_mt5 = pair.replace("/", "")
-
     signal = {
         "id":         now.strftime("%Y%m%d_%H%M%S") + "_" + pair_mt5 + "_" + sig,
         "pair":       pair_mt5,
@@ -520,14 +531,11 @@ def write_signal_json(consensus: dict, pair: str):
         "expires_at": (now + timedelta(hours=4)).strftime("%Y-%m-%dT%H:%M:%SZ"),
         "status":     "pending"
     }
-
     url     = f"https://api.github.com/repos/{GH_REPO}/contents/signal.json"
     headers = {
         "Authorization": f"token {GH_TOKEN}",
         "Accept":        "application/vnd.github.v3+json"
     }
-
-    # Récupérer le SHA existant si le fichier existe déjà
     sha = None
     try:
         r = requests.get(url, headers=headers, timeout=10)
@@ -535,7 +543,6 @@ def write_signal_json(consensus: dict, pair: str):
             sha = r.json().get("sha")
     except Exception:
         pass
-
     content = base64.b64encode(json.dumps(signal, indent=2).encode()).decode()
     body    = {
         "message": f"[signal] {sig} {pair} {now.strftime('%H:%M')} UTC",
@@ -543,7 +550,6 @@ def write_signal_json(consensus: dict, pair: str):
     }
     if sha:
         body["sha"] = sha
-
     try:
         r = requests.put(url, headers=headers, json=body, timeout=10)
         if r.status_code in (200, 201):
