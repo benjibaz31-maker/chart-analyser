@@ -30,7 +30,7 @@ GROQ_KEY  = os.getenv("GROQ_KEY",   "")
 EMAIL_FROM= os.getenv("EMAIL_FROM", "")
 EMAIL_PASS= os.getenv("EMAIL_PASS", "")
 EMAIL_TO  = os.getenv("EMAIL_TO",   "")
-MIN_SCORE = int(os.getenv("MIN_SCORE", "65"))
+MIN_SCORE = int(os.getenv("MIN_SCORE", "55"))
 BALANCE   = float(os.getenv("BALANCE","1000"))
 GH_TOKEN  = os.getenv("GITHUB_TOKEN","")
 GH_REPO   = os.getenv("GITHUB_REPOSITORY","")
@@ -135,128 +135,258 @@ def compute_indicators(df):
     e12=c.ewm(span=12,adjust=False).mean();e26=c.ewm(span=26,adjust=False).mean()
     df["macd"]=e12-e26;df["macd_signal"]=df["macd"].ewm(span=9,adjust=False).mean()
     df["macd_hist"]=df["macd"]-df["macd_signal"];df["ma50"]=c.rolling(50).mean()
+    # EMA200 pour tendance de fond
+    df["ema200"]=c.ewm(span=200,adjust=False).mean()
     return df
 
-def _parse_price(s):
-    if not s or s=="N/A":return None
-    m=re.search(r"\d{1,6}\.\d{1,4}",str(s))
-    return float(m.group()) if m else None
+# ──────────────────────────────────────────────────────────────
+#  SCORING PYTHON — plus de dépendance à Groq pour le signal
+#  Groq est utilisé uniquement pour l'analyse textuelle et SL/TP
+# ──────────────────────────────────────────────────────────────
+def compute_score(df, pair, tf):
+    """
+    Calcule le signal et le score directement en Python.
+    Score 0-100 basé sur RSI, MACD, MA50, EMA200, momentum.
+    Retourne un dict compatible avec l'ancien format Groq.
+    """
+    last   = df.iloc[-1]
+    prev   = df.iloc[-2]
+    rsi    = df["rsi"].iloc[-1]
+    rsi_p  = df["rsi"].iloc[-2]
+    macd_h = df["macd_hist"].iloc[-1]
+    macd_h2= df["macd_hist"].iloc[-2]
+    macd_h3= df["macd_hist"].iloc[-3] if len(df)>2 else 0
+    close  = last["close"]
+    ma50   = last["ma50"]
+    ema200 = last["ema200"] if not pd.isna(last["ema200"]) else ma50
+    is_xau = pair.startswith("XAU")
+    risk   = BALANCE * 0.01
 
-def draw_candles(ax,df):
-    for i,row in df.iterrows():
-        col=GREEN if row["close"]>=row["open"] else RED
-        ax.plot([i,i],[row["low"],row["high"]],color=col,linewidth=0.7,zorder=2)
-        bot=min(row["open"],row["close"])
-        h=max(abs(row["close"]-row["open"]),row["close"]*0.0001)
-        ax.add_patch(Rectangle((i-0.4,bot),0.8,h,facecolor=col,edgecolor=col,linewidth=0,zorder=3))
+    # ── Conditions BUY ──
+    buy_pts = 0
+    buy_reasons = []
+    # 1. RSI < 50 et montant (+15 pts)
+    if rsi < 50 and rsi > rsi_p:
+        buy_pts += 15; buy_reasons.append(f"RSI={rsi:.1f}<50 montant")
+    elif rsi < 45:
+        buy_pts += 10; buy_reasons.append(f"RSI={rsi:.1f}<45")
+    # 2. MACD hist positif ou croisement haussier (+20 pts)
+    if macd_h > 0 and macd_h2 <= 0:
+        buy_pts += 20; buy_reasons.append("MACD croisement haussier")
+    elif macd_h > 0 and macd_h > macd_h2:
+        buy_pts += 15; buy_reasons.append("MACD hist haussier croissant")
+    elif macd_h > macd_h2 > macd_h3:
+        buy_pts += 10; buy_reasons.append("MACD hist accelere haussier")
+    # 3. Prix > MA50 (+20 pts)
+    if close > ma50:
+        buy_pts += 20; buy_reasons.append(f"Close>{ma50:.2f}(MA50)")
+    # 4. Prix > EMA200 (+15 pts)
+    if close > ema200:
+        buy_pts += 15; buy_reasons.append(f"Close>{ema200:.2f}(EMA200)")
+    # 5. Momentum haussier — 3 bougies vertes (+10 pts)
+    last3 = df.tail(3)
+    if all(last3["close"].values > last3["open"].values):
+        buy_pts += 10; buy_reasons.append("3 bougies vertes")
+    # 6. RSI sortie survente (+10 pts)
+    if rsi_p < 30 and rsi > 30:
+        buy_pts += 10; buy_reasons.append("RSI sort survente")
 
-def style_ax(ax,label="",show_x=False):
-    ax.set_facecolor(BG);ax.tick_params(colors=TEXT2,labelsize=7)
-    ax.spines[:].set_color(GRID);ax.yaxis.set_label_position("right");ax.yaxis.tick_right()
-    for sp in ax.spines.values():sp.set_linewidth(0.5)
-    ax.grid(True,color=GRID,linewidth=0.4,linestyle="--",alpha=0.6)
-    if label:ax.text(0.01,0.97,label,transform=ax.transAxes,color=TEXT2,fontsize=7,va="top",ha="left")
-    if not show_x:ax.tick_params(labelbottom=False)
+    # ── Conditions SELL ──
+    sell_pts = 0
+    sell_reasons = []
+    # 1. RSI > 50 et descendant (+15 pts)
+    if rsi > 50 and rsi < rsi_p:
+        sell_pts += 15; sell_reasons.append(f"RSI={rsi:.1f}>50 descendant")
+    elif rsi > 55:
+        sell_pts += 10; sell_reasons.append(f"RSI={rsi:.1f}>55")
+    # 2. MACD hist négatif ou croisement baissier (+20 pts)
+    if macd_h < 0 and macd_h2 >= 0:
+        sell_pts += 20; sell_reasons.append("MACD croisement baissier")
+    elif macd_h < 0 and macd_h < macd_h2:
+        sell_pts += 15; sell_reasons.append("MACD hist baissier croissant")
+    elif macd_h < macd_h2 < macd_h3:
+        sell_pts += 10; sell_reasons.append("MACD hist accelere baissier")
+    # 3. Prix < MA50 (+20 pts)
+    if close < ma50:
+        sell_pts += 20; sell_reasons.append(f"Close<{ma50:.2f}(MA50)")
+    # 4. Prix < EMA200 (+15 pts)
+    if close < ema200:
+        sell_pts += 15; sell_reasons.append(f"Close<{ema200:.2f}(EMA200)")
+    # 5. Momentum baissier — 3 bougies rouges (+10 pts)
+    if all(last3["close"].values < last3["open"].values):
+        sell_pts += 10; sell_reasons.append("3 bougies rouges")
+    # 6. RSI sortie surachat (+10 pts)
+    if rsi_p > 70 and rsi < 70:
+        sell_pts += 10; sell_reasons.append("RSI sort surachat")
 
-def generate_chart(df,pair,tf,sltp=None,signal=""):
-    n=len(df);idx=np.arange(n)
-    fig=plt.figure(figsize=(14,7),facecolor=BG)
-    gs=gridspec.GridSpec(3,1,figure=fig,height_ratios=[3,1,1],hspace=0.04,left=0.02,right=0.88,top=0.93,bottom=0.07)
-    ax1=fig.add_subplot(gs[0]);ax2=fig.add_subplot(gs[1]);ax3=fig.add_subplot(gs[2])
-    draw_candles(ax1,df)
-    ax1.plot(idx,df["ma50"],color=MA_COL,linewidth=1.2,zorder=4)
-    style_ax(ax1,label=f"{pair}  {TF_LABELS[tf]}")
-    ax1.set_xlim(-1,n+1);ax1.autoscale(axis="y")
-    if sltp:
-        entry=_parse_price(sltp.get("entree"));sl_p=_parse_price(sltp.get("sl"));tp_p=_parse_price(sltp.get("tp"))
-        pmin=df["low"].min();pmax=df["high"].max()
-        def hline(price,color,label,ls="--",lw=1.5):
-            if price and pmin*0.95<price<pmax*1.05:
-                ax1.axhline(price,color=color,linewidth=lw,linestyle=ls,alpha=0.9,zorder=5)
-                ax1.text(n+0.3,price,f" {label}\n {price:.2f}",color=color,fontsize=7,va="center",fontweight="bold")
-        hline(entry,"#60a5fa","ENTREE","-",1.8)
-        hline(sl_p,"#ef4444","SL")
-        hline(tp_p,"#22c55e","TP")
-        if entry and sl_p and tp_p:
-            ax1.axhspan(min(entry,tp_p),max(entry,tp_p),alpha=0.06,color="#22c55e",zorder=1)
-            ax1.axhspan(min(entry,sl_p),max(entry,sl_p),alpha=0.06,color="#ef4444",zorder=1)
-    ico="🟢" if signal=="BUY" else "🔴" if signal=="SELL" else "⏸"
-    ax1.set_title(f"  {ico} {pair}  ·  {TF_LABELS[tf]}  ·  {datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M')} UTC",color=TEXT,fontsize=8.5,loc="left",pad=6)
-    hist=df["macd_hist"].values;colors=[MACD_G if v>=0 else MACD_R for v in hist]
-    ax2.bar(idx,hist,color=colors,width=0.7,zorder=3)
-    ax2.plot(idx,df["macd"],color="#818cf8",linewidth=0.9,zorder=4)
-    ax2.plot(idx,df["macd_signal"],color="#f59e0b",linewidth=0.9,zorder=4)
-    ax2.axhline(0,color=GRID,linewidth=0.6)
-    style_ax(ax2,label=f"MACD(12,26,9)  {hist[-1]:.3f}");ax2.set_xlim(-1,n+1)
-    ax3.plot(idx,df["rsi"],color=RSI_COL,linewidth=1.0,zorder=4)
-    ax3.axhline(70,color=RED,linewidth=0.5,linestyle="--",alpha=0.6)
-    ax3.axhline(30,color=GREEN,linewidth=0.5,linestyle="--",alpha=0.6)
-    ax3.fill_between(idx,df["rsi"],70,where=df["rsi"]>=70,alpha=0.15,color=RED)
-    ax3.fill_between(idx,df["rsi"],30,where=df["rsi"]<=30,alpha=0.15,color=GREEN)
-    ax3.set_ylim(0,100);style_ax(ax3,label=f"RSI(14)  {df['rsi'].iloc[-1]:.2f}",show_x=True);ax3.set_xlim(-1,n+1)
-    step=max(1,n//10);xticks=idx[::step]
-    ax3.set_xticks(xticks);ax3.set_xticklabels([df["date"].iloc[i].strftime("%d/%m %Hh") for i in xticks],rotation=30,ha="right",fontsize=6,color=TEXT2)
-    buf=BytesIO();fig.savefig(buf,format="png",dpi=130,bbox_inches="tight",facecolor=BG,edgecolor="none");plt.close(fig);buf.seek(0)
-    return buf.read()
+    # ── Détermination signal ──
+    if buy_pts > sell_pts and buy_pts >= 35:
+        signal = "BUY"; score = min(100, buy_pts); reasons = buy_reasons
+    elif sell_pts > buy_pts and sell_pts >= 35:
+        signal = "SELL"; score = min(100, sell_pts); reasons = sell_reasons
+    else:
+        signal = "WAIT"
+        score  = max(buy_pts, sell_pts)
+        reasons = buy_reasons if buy_pts > sell_pts else sell_reasons
 
-def call_groq(img_bytes,df,pair,tf):
-    last=df.iloc[-1];rsi=df["rsi"].iloc[-1]
-    macd_col="vert" if df["macd_hist"].iloc[-1]>=0 else "rouge"
-    macd_dir="haussier" if df["macd_hist"].iloc[-1]>df["macd_hist"].iloc[-2] else "baissier"
-    ma50=df["ma50"].iloc[-1];above=last["close"]>ma50
-    is_xau=pair.startswith("XAU");risk=BALANCE*0.01;b64=base64.b64encode(img_bytes).decode()
-    xau_r=f"""
-REGLES XAU: sl_pips/tp_pips=DOLLARS. SL M15:5-12$ H1:10-20$ H4:20-40$.
-Prix 2 decimales (ex:4412.30). INTERDIT prix<100. lot_micro=({risk:.2f}/(sl_pips*100))""" if is_xau else f"""
-REGLES FOREX: sl_pips/tp_pips=PIPS. SL M15:15-25p H1:30-50p H4:50-100p.
-lot_micro=({risk:.2f}/(sl_pips*10))"""
-    prompt=f"""Analyste technique RSI+MACD+MA50. Paire {pair} {TF_LABELS[tf]}.
-BUY: RSI<50 montant + MACD rouge->vert + prix>MA50
-SELL: RSI>50 descendant + MACD vert->rouge + prix<MA50
-WAIT: <2 conditions
-Donnees: Close={last['close']:.2f} RSI={rsi:.2f} MACD={macd_col} {macd_dir} MA50={ma50:.2f} Prix={'AU-DESSUS' if above else 'EN-DESSOUS'}{xau_r}
+    print(f"    Score Python: {signal} {score}/100 | {' | '.join(reasons) if reasons else 'aucune condition'}")
+
+    # ── Calcul SL/TP ──
+    atr = df["high"].tail(14).max() - df["low"].tail(14).min()
+    atr_candle = (df["high"] - df["low"]).tail(14).mean()
+    if is_xau:
+        sl_dist = {"15m": 8, "1h": 15, "4h": 30}.get(tf, 15)
+        tp_dist = sl_dist * 2
+    else:
+        sl_dist = {"15m": 20, "1h": 40, "4h": 80}.get(tf, 40)
+        tp_dist = sl_dist * 2
+
+    digits = 2 if is_xau else 5
+    if signal == "BUY":
+        sl_price = round(close - sl_dist, digits)
+        tp_price = round(close + tp_dist, digits)
+    elif signal == "SELL":
+        sl_price = round(close + sl_dist, digits)
+        tp_price = round(close - tp_dist, digits)
+    else:
+        sl_price = round(close - sl_dist, digits)
+        tp_price = round(close + tp_dist, digits)
+
+    lot = round(risk / (sl_dist * (100 if is_xau else 10)), 2)
+    lot = max(0.01, lot)
+
+    # ── Zones RSI ──
+    rsi_zone = "survente" if rsi < 30 else "surachat" if rsi > 70 else "neutre"
+    rsi_trend = "montant" if rsi > rsi_p else "descendant" if rsi < rsi_p else "stable"
+    macd_etat = "haussier" if macd_h > 0 else "baissier" if macd_h < 0 else "neutre"
+    ma50_pos  = "au-dessus" if close > ma50 else "en-dessous"
+    tendance  = "haussiere" if close > ema200 else "baissiere"
+
+    return {
+        "signal":  signal,
+        "score":   score,
+        "confiance": {"niveau": "eleve" if score >= 70 else "moyen" if score >= 50 else "faible",
+                      "raison": " | ".join(reasons) if reasons else "aucune condition claire"},
+        "tendance": {"direction": tendance, "force": "forte" if score >= 70 else "moderee",
+                     "description": f"Prix {'au-dessus' if close>ema200 else 'en-dessous'} EMA200"},
+        "rsi":    {"valeur": round(rsi, 2), "zone": rsi_zone, "tendance": rsi_trend},
+        "macd":   {"etat": macd_etat, "bougies_depuis": 1},
+        "ma50":   {"position": ma50_pos, "condition": close > ma50 if signal=="BUY" else close < ma50},
+        "supports_resistances": {
+            "resistances": [f"R1: {round(close*1.005,2)}", f"R2: {round(close*1.010,2)}"],
+            "supports":    [f"S1: {round(close*0.995,2)}", f"S2: {round(close*0.990,2)}"]
+        },
+        "sltp": {
+            "entree":   str(round(close, digits)),
+            "sl":       str(sl_price),
+            "sl_pips":  str(sl_dist),
+            "tp":       str(tp_price),
+            "tp_pips":  str(tp_dist),
+            "rr":       "1:2",
+            "lot_micro": str(lot)
+        },
+        "forces":   " | ".join(reasons[:3]) if reasons else "—",
+        "faiblesses": "Marché sans tendance forte" if score < 55 else "Signal technique",
+        "analyse":  f"{pair} {TF_LABELS[tf]}: {signal} score={score}/100. RSI={rsi:.1f} {rsi_zone}. MACD {macd_etat}. Prix {ma50_pos} MA50.",
+        "scenario_alternatif": f"Invalidation si prix {'passe sous' if signal=='BUY' else 'passe au-dessus'} {sl_price}",
+        "probabilite_signal":  f"{score}% — basé sur {len(reasons)} condition(s) technique(s)"
+    }
+
+def call_groq(img_bytes, df, pair, tf):
+    """
+    Groq est maintenant utilisé UNIQUEMENT pour enrichir l'analyse textuelle.
+    Le signal et le score viennent de compute_score() en Python.
+    Si Groq échoue, on retourne quand même le résultat Python.
+    """
+    # Score Python — source de vérité
+    base_result = compute_score(df, pair, tf)
+    signal = base_result["signal"]
+    score  = base_result["score"]
+
+    # Tentative enrichissement Groq (optionnel)
+    if not GROQ_KEY:
+        return base_result
+
+    last  = df.iloc[-1]
+    rsi   = df["rsi"].iloc[-1]
+    ma50  = last["ma50"]
+    close = last["close"]
+    macd_col = "vert" if df["macd_hist"].iloc[-1] >= 0 else "rouge"
+    macd_dir = "haussier" if df["macd_hist"].iloc[-1] > df["macd_hist"].iloc[-2] else "baissier"
+    above = close > ma50
+    is_xau = pair.startswith("XAU")
+    risk = BALANCE * 0.01
+    b64 = base64.b64encode(img_bytes).decode()
+
+    xau_r = f"""
+REGLES XAU: sl_pips/tp_pips=DOLLARS. SL {TF_LABELS[tf]} selon ATR.
+Prix 2 decimales. INTERDIT prix<100. lot_micro=({risk:.2f}/(sl_pips*100))""" if is_xau else f"""
+REGLES FOREX: sl_pips/tp_pips=PIPS. lot_micro=({risk:.2f}/(sl_pips*10))"""
+
+    sltp_base = base_result["sltp"]
+
+    prompt = f"""Analyste technique expert. Paire {pair} {TF_LABELS[tf]}.
+Signal déjà calculé: {signal} (score={score}/100)
+Close={close:.2f} RSI={rsi:.2f} MACD={macd_col} {macd_dir} MA50={ma50:.2f} Prix={'AU-DESSUS' if above else 'EN-DESSOUS'} MA50
+{xau_r}
+
+Complète UNIQUEMENT les champs textuels et affine les niveaux SL/TP si nécessaire.
+Garde signal="{signal}" et score proche de {score}.
 JSON UNIQUEMENT sans markdown:
-{{"signal":"BUY|SELL|WAIT","score":0-100,"confiance":{{"niveau":"faible|moyen|eleve","raison":"..."}},"tendance":{{"direction":"haussiere|baissiere|laterale","force":"faible|moderee|forte","description":"..."}},"rsi":{{"valeur":{rsi:.2f},"zone":"survente|neutre|surachat","tendance":"montant|descendant|stable"}},"macd":{{"etat":"haussier|baissier|neutre","bougies_depuis":0}},"ma50":{{"position":"au-dessus|en-dessous|proche","condition":true}},"supports_resistances":{{"resistances":["R1: niveau","R2: niveau"],"supports":["S1: niveau","S2: niveau"]}},"sltp":{{"entree":"valeur","sl":"valeur","sl_pips":"valeur","tp":"valeur","tp_pips":"valeur","rr":"1:2","lot_micro":"valeur"}},"forces":"Force1\\nForce2","faiblesses":"Risque1\\nRisque2","analyse":"3 phrases","scenario_alternatif":"niveau invalidation","probabilite_signal":"XX% justification"}}"""
-    payload={"model":MODEL,"max_tokens":1100,"messages":[{"role":"user","content":[{"type":"text","text":prompt},{"type":"image_url","image_url":{"url":f"data:image/png;base64,{b64}"}}]}]}
-    hdrs={"Authorization":f"Bearer {GROQ_KEY}","Content-Type":"application/json"}
-    for attempt in range(3):
-        try:
-            r=requests.post("https://api.groq.com/openai/v1/chat/completions",headers=hdrs,json=payload,timeout=60)
-            r.raise_for_status();raw=r.json()["choices"][0]["message"]["content"]
-            clean=raw.replace("```json","").replace("```","").strip()
-            m=re.search(r'\{[\s\S]*\}',clean)
-            return json.loads(m.group(0) if m else clean)
-        except Exception as e:
-            print(f"  Groq tentative {attempt+1}/3: {e}")
-            if attempt<2:time.sleep(5*(attempt+1))
-    return {}
+{{"signal":"{signal}","score":{score},"confiance":{{"niveau":"faible|moyen|eleve","raison":"..."}},"tendance":{{"direction":"haussiere|baissiere|laterale","force":"faible|moderee|forte","description":"..."}},"rsi":{{"valeur":{rsi:.2f},"zone":"survente|neutre|surachat","tendance":"montant|descendant|stable"}},"macd":{{"etat":"haussier|baissier|neutre","bougies_depuis":1}},"ma50":{{"position":"au-dessus|en-dessous|proche","condition":true}},"supports_resistances":{{"resistances":["R1: {sltp_base['tp']}","R2: niveau"],"supports":["S1: {sltp_base['sl']}","S2: niveau"]}},"sltp":{{"entree":"{sltp_base['entree']}","sl":"{sltp_base['sl']}","sl_pips":"{sltp_base['sl_pips']}","tp":"{sltp_base['tp']}","tp_pips":"{sltp_base['tp_pips']}","rr":"1:2","lot_micro":"{sltp_base['lot_micro']}"}},"forces":"...","faiblesses":"...","analyse":"3 phrases max","scenario_alternatif":"niveau invalidation","probabilite_signal":"{score}% justification"}}"""
 
-# ──────────────────────────────────────────────────────────────
-#  CORRECTION PRINCIPALE : evaluate_consensus
-#  — sc4 est maintenant vérifié dans la condition forte
-#  — logs détaillés pour chaque cas
-# ──────────────────────────────────────────────────────────────
+    payload = {"model": MODEL, "max_tokens": 800,
+               "messages": [{"role": "user", "content": [
+                   {"type": "text", "text": prompt},
+                   {"type": "image_url", "image_url": {"url": f"data:image/png;base64,{b64}"}}
+               ]}]}
+    hdrs = {"Authorization": f"Bearer {GROQ_KEY}", "Content-Type": "application/json"}
+
+    for attempt in range(2):
+        try:
+            r = requests.post("https://api.groq.com/openai/v1/chat/completions",
+                              headers=hdrs, json=payload, timeout=45)
+            r.raise_for_status()
+            raw   = r.json()["choices"][0]["message"]["content"]
+            clean = raw.replace("```json","").replace("```","").strip()
+            m     = re.search(r'\{[\s\S]*\}', clean)
+            groq_result = json.loads(m.group(0) if m else clean)
+            # Forcer le signal et score Python — Groq ne peut pas les changer
+            groq_result["signal"] = signal
+            groq_result["score"]  = score
+            # Garder sltp Python si Groq retourne des valeurs invalides
+            if not groq_result.get("sltp",{}).get("entree"):
+                groq_result["sltp"] = sltp_base
+            print(f"    Groq enrichissement OK")
+            return groq_result
+        except Exception as e:
+            print(f"  Groq tentative {attempt+1}/2: {e}")
+            if attempt < 1:
+                time.sleep(3)
+
+    print(f"    Groq indisponible — résultat Python utilisé")
+    return base_result
+
 def evaluate_consensus(results):
     r15=results.get("15m",{});r1=results.get("1h",{});r4=results.get("4h",{})
     s15=r15.get("signal","WAIT");s1=r1.get("signal","WAIT");s4=r4.get("signal","WAIT")
     sc1=int(r1.get("score",0));sc4=int(r4.get("score",0))
     print(f"  M15={s15} | H1={s1}({sc1}) | H4={s4}({sc4}) | MIN_SCORE={MIN_SCORE}")
 
-    # ── Signal FORT : H1+H4 alignés ET les deux >= MIN_SCORE ──
+    # Signal FORT : H1+H4 alignés ET les deux >= MIN_SCORE
     if s1==s4 and s1 in ("BUY","SELL") and sc1>=MIN_SCORE and sc4>=MIN_SCORE:
-        print(f"  ✅ Signal FORT : H1={sc1} H4={sc4} >= {MIN_SCORE} — signal.json sera écrit")
+        print(f"  ✅ Signal FORT : H1={sc1} H4={sc4} >= {MIN_SCORE}")
         return {"signal":s1,"score_h1":sc1,"score_h4":sc4,
                 "m15_ok":s15==s1,"partial":False,
                 "r15":r15,"r1":r1,"r4":r4}
 
-    # ── Signal PARTIEL : H1 très fort (>=MIN_SCORE+10) mais H4 en WAIT ──
+    # Signal PARTIEL : H1 fort (>=MIN_SCORE+10) mais H4 en WAIT
     if s1 in ("BUY","SELL") and s4 in ("WAIT",s1) and sc1>=MIN_SCORE+10:
-        print(f"  ⚠️ Signal PARTIEL : H1={sc1}>={MIN_SCORE+10} mais H4={sc4} en WAIT — lot réduit 50%")
+        print(f"  ⚠️ Signal PARTIEL : H1={sc1}>={MIN_SCORE+10} H4={sc4} en WAIT")
         return {"signal":s1,"score_h1":sc1,"score_h4":sc4,
                 "m15_ok":s15==s1,"partial":True,
                 "r15":r15,"r1":r1,"r4":r4}
 
-    # ── Aucun signal ──
     if s1 not in ("BUY","SELL"):
         print(f"  ❌ Pas de signal : H1={s1} — pas de direction claire")
     elif s1!=s4:
@@ -264,7 +394,7 @@ def evaluate_consensus(results):
     elif sc1<MIN_SCORE:
         print(f"  ❌ Pas de signal : H1 score={sc1} < {MIN_SCORE}")
     elif sc4<MIN_SCORE:
-        print(f"  ❌ Pas de signal : H4 score={sc4} < {MIN_SCORE} ← BLOQUANT")
+        print(f"  ❌ Pas de signal : H4 score={sc4} < {MIN_SCORE}")
     return None
 
 def build_email(consensus,charts,pair):
@@ -406,15 +536,15 @@ def analyze_pair(pair,state):
         try:df=fetch_ohlcv(pair,tf,CANDLES[tf])
         except Exception as e:print(f"  Erreur donnees {TF_LABELS[tf]}: {e}");continue
         df=compute_indicators(df)
-        print(f"  Analyse Groq {TF_LABELS[tf]}...")
+        print(f"  Analyse {TF_LABELS[tf]}...")
         try:
             img=generate_chart(df,pair,tf)
             result=call_groq(img,df,pair,tf)
             results[tf]=result
             print(f"  -> {result.get('signal','?')} ({result.get('score',0)}/100)")
             if tf=="1h":sltp_h1=result.get("sltp",{})
-        except Exception as e:print(f"  Erreur Groq {TF_LABELS[tf]}: {e}");traceback.print_exc()
-        time.sleep(2)
+        except Exception as e:print(f"  Erreur {TF_LABELS[tf]}: {e}");traceback.print_exc()
+        time.sleep(1)
     print(f"\n  -- CONSENSUS --")
     if len(results)<2:print("  Donnees insuffisantes");return state,False
     consensus=evaluate_consensus(results)
