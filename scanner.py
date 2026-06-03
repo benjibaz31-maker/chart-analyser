@@ -46,6 +46,9 @@ TEXT="#e2e8f0";TEXT2="#94a3b8"
 
 STATE_FILE="signals_state.json"
 
+# ──────────────────────────────────────────────────────────────
+#  ÉTAT / GITHUB
+# ──────────────────────────────────────────────────────────────
 def read_state():
     if not GH_TOKEN or not GH_REPO:
         return {},None
@@ -70,6 +73,59 @@ def write_state(state,sha):
     try:requests.put(url,headers=hdrs,json=body,timeout=10)
     except Exception as e:print(f"  Ecriture etat: {e}")
 
+def write_signal_json(consensus, pair):
+    if not GH_TOKEN or not GH_REPO:
+        print("  ⚠ GITHUB_TOKEN manquant — signal.json non écrit")
+        return
+    sig   = consensus["signal"]
+    r1    = consensus["r1"]
+    sltp  = r1.get("sltp", {})
+    now   = datetime.now(timezone.utc)
+    pair_mt5 = pair.replace("/", "")
+    signal = {
+        "id":         now.strftime("%Y%m%d_%H%M%S") + "_" + pair_mt5 + "_" + sig,
+        "pair":       pair_mt5,
+        "action":     sig,
+        "entry":      sltp.get("entree",    "0"),
+        "sl":         sltp.get("sl",        "0"),
+        "tp":         sltp.get("tp",        "0"),
+        "sl_pips":    sltp.get("sl_pips",   "0"),
+        "tp_pips":    sltp.get("tp_pips",   "0"),
+        "lot":        float(sltp.get("lot_micro", "0.01") or "0.01"),
+        "rr":         sltp.get("rr",        "1:2"),
+        "score_h1":   consensus["score_h1"],
+        "score_h4":   consensus["score_h4"],
+        "m15_ok":     consensus["m15_ok"],
+        "partial":    consensus["partial"],
+        "created_at": now.strftime("%Y-%m-%dT%H:%M:%SZ"),
+        "expires_at": (now + timedelta(hours=4)).strftime("%Y-%m-%dT%H:%M:%SZ"),
+        "status":     "pending"
+    }
+    url     = f"https://api.github.com/repos/{GH_REPO}/contents/signal.json"
+    headers = {"Authorization":f"token {GH_TOKEN}","Accept":"application/vnd.github.v3+json"}
+    sha = None
+    try:
+        r = requests.get(url, headers=headers, timeout=10)
+        if r.status_code == 200:
+            sha = r.json().get("sha")
+    except Exception:
+        pass
+    content = base64.b64encode(json.dumps(signal, indent=2).encode()).decode()
+    body    = {"message": f"[signal] {sig} {pair} {now.strftime('%H:%M')} UTC","content": content}
+    if sha:
+        body["sha"] = sha
+    try:
+        r = requests.put(url, headers=headers, json=body, timeout=10)
+        if r.status_code in (200, 201):
+            print(f"  ✅ signal.json écrit dans GitHub ({sig} {pair})")
+        else:
+            print(f"  ❌ Erreur écriture signal.json : {r.status_code} {r.text[:100]}")
+    except Exception as e:
+        print(f"  ❌ Exception signal.json : {e}")
+
+# ──────────────────────────────────────────────────────────────
+#  ANTI-SPAM
+# ──────────────────────────────────────────────────────────────
 def already_signaled(state,pair,signal):
     today=datetime.now(timezone.utc).strftime("%Y-%m-%d")
     k=f"{pair}_{today}"
@@ -85,6 +141,9 @@ def mark_sent(state,pair,signal):
     cutoff=(datetime.now(timezone.utc)-timedelta(days=14)).strftime("%Y-%m-%d")
     return {k:v for k,v in state.items() if k.split("_")[-1]>=cutoff}
 
+# ──────────────────────────────────────────────────────────────
+#  MARCHÉ OUVERT
+# ──────────────────────────────────────────────────────────────
 def is_market_open():
     now=datetime.now(timezone.utc);wd=now.weekday();h=now.hour
     if wd==5:return False
@@ -92,6 +151,9 @@ def is_market_open():
     if wd==4:return h<21
     return True
 
+# ──────────────────────────────────────────────────────────────
+#  DONNÉES OHLCV
+# ──────────────────────────────────────────────────────────────
 def _dl_yf(ticker,period,interval="1h"):
     data=yf.download(ticker,period=period,interval=interval,auto_adjust=True,progress=False)
     if data.empty:raise ValueError(f"Pas de donnees pour {ticker}")
@@ -128,6 +190,9 @@ def fetch_ohlcv(pair,interval,n):
     print(f"    {len(data)} bougies — Close={data['close'].iloc[-1]:.2f}")
     return data
 
+# ──────────────────────────────────────────────────────────────
+#  INDICATEURS
+# ──────────────────────────────────────────────────────────────
 def compute_indicators(df):
     c=df["close"];d=c.diff();g=d.clip(lower=0);l=(-d).clip(lower=0)
     ag=g.ewm(com=13,min_periods=14).mean();al=l.ewm(com=13,min_periods=14).mean()
@@ -135,20 +200,132 @@ def compute_indicators(df):
     e12=c.ewm(span=12,adjust=False).mean();e26=c.ewm(span=26,adjust=False).mean()
     df["macd"]=e12-e26;df["macd_signal"]=df["macd"].ewm(span=9,adjust=False).mean()
     df["macd_hist"]=df["macd"]-df["macd_signal"];df["ma50"]=c.rolling(50).mean()
-    # EMA200 pour tendance de fond
     df["ema200"]=c.ewm(span=200,adjust=False).mean()
     return df
 
 # ──────────────────────────────────────────────────────────────
-#  SCORING PYTHON — plus de dépendance à Groq pour le signal
-#  Groq est utilisé uniquement pour l'analyse textuelle et SL/TP
+#  GRAPHIQUE ANNOTÉ SL/TP  ← FONCTION MANQUANTE RÉINTÉGRÉE
+# ──────────────────────────────────────────────────────────────
+def generate_chart(df, pair, tf, sltp=None, signal=None):
+    """
+    Génère un graphique candlestick annoté avec SL/TP.
+    Retourne les bytes PNG.
+    """
+    n = min(60, len(df))
+    df_plot = df.tail(n).reset_index(drop=True)
+
+    fig = plt.figure(figsize=(12, 7), facecolor=BG)
+    gs  = gridspec.GridSpec(3, 1, height_ratios=[3, 1, 1], hspace=0.04)
+    ax1 = fig.add_subplot(gs[0])
+    ax2 = fig.add_subplot(gs[1], sharex=ax1)
+    ax3 = fig.add_subplot(gs[2], sharex=ax1)
+
+    for ax in [ax1, ax2, ax3]:
+        ax.set_facecolor(BG)
+        ax.tick_params(colors=TEXT2, labelsize=7)
+        ax.spines[:].set_color(GRID)
+        ax.grid(color=GRID, linewidth=0.5, alpha=0.6)
+
+    # ── Bougies ──
+    for i, row in df_plot.iterrows():
+        color = GREEN if row["close"] >= row["open"] else RED
+        ax1.plot([i, i], [row["low"], row["high"]], color=color, linewidth=0.8)
+        rect = Rectangle((i - 0.3, min(row["open"], row["close"])),
+                          0.6, abs(row["close"] - row["open"]),
+                          facecolor=color, edgecolor=color, linewidth=0)
+        ax1.add_patch(rect)
+
+    # ── MA50 & EMA200 ──
+    if "ma50" in df_plot.columns:
+        ax1.plot(df_plot.index, df_plot["ma50"], color=MA_COL,
+                 linewidth=1.2, label="MA50", alpha=0.85)
+    if "ema200" in df_plot.columns:
+        ax1.plot(df_plot.index, df_plot["ema200"], color="#f59e0b",
+                 linewidth=1.0, label="EMA200", alpha=0.75, linestyle="--")
+
+    # ── Lignes SL/TP ──
+    if sltp and signal in ("BUY", "SELL"):
+        try:
+            sl_val = float(sltp.get("sl", 0))
+            tp_val = float(sltp.get("tp", 0))
+            entry  = float(sltp.get("entree", 0))
+            if sl_val > 0:
+                ax1.axhline(sl_val, color="#ef5350", linewidth=1.2,
+                            linestyle="--", alpha=0.9, label=f"SL {sl_val}")
+                ax1.text(n - 1, sl_val, f" SL {sl_val}", color="#ef5350",
+                         fontsize=7, va="center")
+            if tp_val > 0:
+                ax1.axhline(tp_val, color="#26a69a", linewidth=1.2,
+                            linestyle="--", alpha=0.9, label=f"TP {tp_val}")
+                ax1.text(n - 1, tp_val, f" TP {tp_val}", color="#26a69a",
+                         fontsize=7, va="center")
+            if entry > 0:
+                ax1.axhline(entry, color="#60a5fa", linewidth=1.0,
+                            linestyle=":", alpha=0.8, label=f"Entrée {entry}")
+        except Exception:
+            pass
+
+    # ── Titre ax1 ──
+    sig_label = f" — {signal}" if signal else ""
+    ax1.set_title(f"{pair} {TF_LABELS[tf]}{sig_label}",
+                  color=TEXT, fontsize=10, pad=6, loc="left")
+    ax1.legend(fontsize=6, loc="upper left",
+               facecolor=BG, edgecolor=GRID, labelcolor=TEXT2)
+    ax1.set_xlim(-1, n + 1)
+
+    # ── MACD ──
+    if "macd_hist" in df_plot.columns:
+        colors_macd = [MACD_G if v >= 0 else MACD_R
+                       for v in df_plot["macd_hist"]]
+        ax2.bar(df_plot.index, df_plot["macd_hist"],
+                color=colors_macd, width=0.7, alpha=0.85)
+        if "macd" in df_plot.columns:
+            ax2.plot(df_plot.index, df_plot["macd"],
+                     color="#60a5fa", linewidth=0.9)
+        if "macd_signal" in df_plot.columns:
+            ax2.plot(df_plot.index, df_plot["macd_signal"],
+                     color="#f59e0b", linewidth=0.9)
+    ax2.set_ylabel("MACD", color=TEXT2, fontsize=7)
+    ax2.axhline(0, color=GRID, linewidth=0.6)
+
+    # ── RSI ──
+    if "rsi" in df_plot.columns:
+        ax3.plot(df_plot.index, df_plot["rsi"],
+                 color=RSI_COL, linewidth=1.0)
+        ax3.axhline(70, color=RED,   linewidth=0.6, linestyle="--", alpha=0.6)
+        ax3.axhline(30, color=GREEN, linewidth=0.6, linestyle="--", alpha=0.6)
+        ax3.fill_between(df_plot.index, df_plot["rsi"], 70,
+                         where=(df_plot["rsi"] >= 70),
+                         color=RED, alpha=0.12)
+        ax3.fill_between(df_plot.index, df_plot["rsi"], 30,
+                         where=(df_plot["rsi"] <= 30),
+                         color=GREEN, alpha=0.12)
+        ax3.set_ylim(0, 100)
+    ax3.set_ylabel("RSI", color=TEXT2, fontsize=7)
+
+    # ── Labels X (dates) ──
+    if "date" in df_plot.columns:
+        step = max(1, n // 8)
+        ticks = range(0, n, step)
+        labels = [df_plot["date"].iloc[i].strftime("%d/%m %H:%M")
+                  for i in ticks]
+        ax3.set_xticks(list(ticks))
+        ax3.set_xticklabels(labels, rotation=25, ha="right",
+                            fontsize=6, color=TEXT2)
+    plt.setp(ax1.get_xticklabels(), visible=False)
+    plt.setp(ax2.get_xticklabels(), visible=False)
+
+    buf = BytesIO()
+    plt.savefig(buf, format="png", dpi=120,
+                bbox_inches="tight", facecolor=BG)
+    plt.close(fig)
+    buf.seek(0)
+    return buf.read()
+
+# ──────────────────────────────────────────────────────────────
+#  SCORING PYTHON
 # ──────────────────────────────────────────────────────────────
 def compute_score(df, pair, tf):
-    """
-    Calcule le signal et le score directement en Python.
-    Score 0-100 basé sur RSI, MACD, MA50, EMA200, momentum.
-    Retourne un dict compatible avec l'ancien format Groq.
-    """
     last   = df.iloc[-1]
     prev   = df.iloc[-2]
     rsi    = df["rsi"].iloc[-1]
@@ -162,64 +339,47 @@ def compute_score(df, pair, tf):
     is_xau = pair.startswith("XAU")
     risk   = BALANCE * 0.01
 
-    # ── Conditions BUY ──
-    buy_pts = 0
-    buy_reasons = []
-    # 1. RSI < 50 et montant (+15 pts)
+    buy_pts = 0; buy_reasons = []
     if rsi < 50 and rsi > rsi_p:
         buy_pts += 15; buy_reasons.append(f"RSI={rsi:.1f}<50 montant")
     elif rsi < 45:
         buy_pts += 10; buy_reasons.append(f"RSI={rsi:.1f}<45")
-    # 2. MACD hist positif ou croisement haussier (+20 pts)
     if macd_h > 0 and macd_h2 <= 0:
         buy_pts += 20; buy_reasons.append("MACD croisement haussier")
     elif macd_h > 0 and macd_h > macd_h2:
         buy_pts += 15; buy_reasons.append("MACD hist haussier croissant")
     elif macd_h > macd_h2 > macd_h3:
         buy_pts += 10; buy_reasons.append("MACD hist accelere haussier")
-    # 3. Prix > MA50 (+20 pts)
     if close > ma50:
         buy_pts += 20; buy_reasons.append(f"Close>{ma50:.2f}(MA50)")
-    # 4. Prix > EMA200 (+15 pts)
     if close > ema200:
         buy_pts += 15; buy_reasons.append(f"Close>{ema200:.2f}(EMA200)")
-    # 5. Momentum haussier — 3 bougies vertes (+10 pts)
     last3 = df.tail(3)
     if all(last3["close"].values > last3["open"].values):
         buy_pts += 10; buy_reasons.append("3 bougies vertes")
-    # 6. RSI sortie survente (+10 pts)
     if rsi_p < 30 and rsi > 30:
         buy_pts += 10; buy_reasons.append("RSI sort survente")
 
-    # ── Conditions SELL ──
-    sell_pts = 0
-    sell_reasons = []
-    # 1. RSI > 50 et descendant (+15 pts)
+    sell_pts = 0; sell_reasons = []
     if rsi > 50 and rsi < rsi_p:
         sell_pts += 15; sell_reasons.append(f"RSI={rsi:.1f}>50 descendant")
     elif rsi > 55:
         sell_pts += 10; sell_reasons.append(f"RSI={rsi:.1f}>55")
-    # 2. MACD hist négatif ou croisement baissier (+20 pts)
     if macd_h < 0 and macd_h2 >= 0:
         sell_pts += 20; sell_reasons.append("MACD croisement baissier")
     elif macd_h < 0 and macd_h < macd_h2:
         sell_pts += 15; sell_reasons.append("MACD hist baissier croissant")
     elif macd_h < macd_h2 < macd_h3:
         sell_pts += 10; sell_reasons.append("MACD hist accelere baissier")
-    # 3. Prix < MA50 (+20 pts)
     if close < ma50:
         sell_pts += 20; sell_reasons.append(f"Close<{ma50:.2f}(MA50)")
-    # 4. Prix < EMA200 (+15 pts)
     if close < ema200:
         sell_pts += 15; sell_reasons.append(f"Close<{ema200:.2f}(EMA200)")
-    # 5. Momentum baissier — 3 bougies rouges (+10 pts)
     if all(last3["close"].values < last3["open"].values):
         sell_pts += 10; sell_reasons.append("3 bougies rouges")
-    # 6. RSI sortie surachat (+10 pts)
     if rsi_p > 70 and rsi < 70:
         sell_pts += 10; sell_reasons.append("RSI sort surachat")
 
-    # ── Détermination signal ──
     if buy_pts > sell_pts and buy_pts >= 35:
         signal = "BUY"; score = min(100, buy_pts); reasons = buy_reasons
     elif sell_pts > buy_pts and sell_pts >= 35:
@@ -231,17 +391,13 @@ def compute_score(df, pair, tf):
 
     print(f"    Score Python: {signal} {score}/100 | {' | '.join(reasons) if reasons else 'aucune condition'}")
 
-    # ── Calcul SL/TP ──
-    atr = df["high"].tail(14).max() - df["low"].tail(14).min()
-    atr_candle = (df["high"] - df["low"]).tail(14).mean()
     if is_xau:
         sl_dist = {"15m": 8, "1h": 15, "4h": 30}.get(tf, 15)
-        tp_dist = sl_dist * 2
     else:
         sl_dist = {"15m": 20, "1h": 40, "4h": 80}.get(tf, 40)
-        tp_dist = sl_dist * 2
+    tp_dist = sl_dist * 2
+    digits  = 2 if is_xau else 5
 
-    digits = 2 if is_xau else 5
     if signal == "BUY":
         sl_price = round(close - sl_dist, digits)
         tp_price = round(close + tp_dist, digits)
@@ -252,11 +408,9 @@ def compute_score(df, pair, tf):
         sl_price = round(close - sl_dist, digits)
         tp_price = round(close + tp_dist, digits)
 
-    lot = round(risk / (sl_dist * (100 if is_xau else 10)), 2)
-    lot = max(0.01, lot)
+    lot = max(0.01, round(risk / (sl_dist * (100 if is_xau else 10)), 2))
 
-    # ── Zones RSI ──
-    rsi_zone = "survente" if rsi < 30 else "surachat" if rsi > 70 else "neutre"
+    rsi_zone  = "survente" if rsi < 30 else "surachat" if rsi > 70 else "neutre"
     rsi_trend = "montant" if rsi > rsi_p else "descendant" if rsi < rsi_p else "stable"
     macd_etat = "haussier" if macd_h > 0 else "baissier" if macd_h < 0 else "neutre"
     ma50_pos  = "au-dessus" if close > ma50 else "en-dessous"
@@ -277,12 +431,12 @@ def compute_score(df, pair, tf):
             "supports":    [f"S1: {round(close*0.995,2)}", f"S2: {round(close*0.990,2)}"]
         },
         "sltp": {
-            "entree":   str(round(close, digits)),
-            "sl":       str(sl_price),
-            "sl_pips":  str(sl_dist),
-            "tp":       str(tp_price),
-            "tp_pips":  str(tp_dist),
-            "rr":       "1:2",
+            "entree":    str(round(close, digits)),
+            "sl":        str(sl_price),
+            "sl_pips":   str(sl_dist),
+            "tp":        str(tp_price),
+            "tp_pips":   str(tp_dist),
+            "rr":        "1:2",
             "lot_micro": str(lot)
         },
         "forces":   " | ".join(reasons[:3]) if reasons else "—",
@@ -292,18 +446,13 @@ def compute_score(df, pair, tf):
         "probabilite_signal":  f"{score}% — basé sur {len(reasons)} condition(s) technique(s)"
     }
 
+# ──────────────────────────────────────────────────────────────
+#  CALL GROQ (enrichissement optionnel)
+# ──────────────────────────────────────────────────────────────
 def call_groq(img_bytes, df, pair, tf):
-    """
-    Groq est maintenant utilisé UNIQUEMENT pour enrichir l'analyse textuelle.
-    Le signal et le score viennent de compute_score() en Python.
-    Si Groq échoue, on retourne quand même le résultat Python.
-    """
-    # Score Python — source de vérité
     base_result = compute_score(df, pair, tf)
     signal = base_result["signal"]
     score  = base_result["score"]
-
-    # Tentative enrichissement Groq (optionnel)
     if not GROQ_KEY:
         return base_result
 
@@ -313,27 +462,35 @@ def call_groq(img_bytes, df, pair, tf):
     close = last["close"]
     macd_col = "vert" if df["macd_hist"].iloc[-1] >= 0 else "rouge"
     macd_dir = "haussier" if df["macd_hist"].iloc[-1] > df["macd_hist"].iloc[-2] else "baissier"
-    above = close > ma50
+    above  = close > ma50
     is_xau = pair.startswith("XAU")
-    risk = BALANCE * 0.01
-    b64 = base64.b64encode(img_bytes).decode()
-
-    xau_r = f"""
-REGLES XAU: sl_pips/tp_pips=DOLLARS. SL {TF_LABELS[tf]} selon ATR.
-Prix 2 decimales. INTERDIT prix<100. lot_micro=({risk:.2f}/(sl_pips*100))""" if is_xau else f"""
-REGLES FOREX: sl_pips/tp_pips=PIPS. lot_micro=({risk:.2f}/(sl_pips*10))"""
-
+    risk   = BALANCE * 0.01
+    b64    = base64.b64encode(img_bytes).decode()
     sltp_base = base_result["sltp"]
 
-    prompt = f"""Analyste technique expert. Paire {pair} {TF_LABELS[tf]}.
-Signal déjà calculé: {signal} (score={score}/100)
-Close={close:.2f} RSI={rsi:.2f} MACD={macd_col} {macd_dir} MA50={ma50:.2f} Prix={'AU-DESSUS' if above else 'EN-DESSOUS'} MA50
-{xau_r}
+    xau_r = (f"\nREGLES XAU: sl_pips/tp_pips=DOLLARS. SL {TF_LABELS[tf]} selon ATR.\n"
+             f"Prix 2 decimales. INTERDIT prix<100. lot_micro=({risk:.2f}/(sl_pips*100))"
+             if is_xau else
+             f"\nREGLES FOREX: sl_pips/tp_pips=PIPS. lot_micro=({risk:.2f}/(sl_pips*10))")
 
-Complète UNIQUEMENT les champs textuels et affine les niveaux SL/TP si nécessaire.
-Garde signal="{signal}" et score proche de {score}.
-JSON UNIQUEMENT sans markdown:
-{{"signal":"{signal}","score":{score},"confiance":{{"niveau":"faible|moyen|eleve","raison":"..."}},"tendance":{{"direction":"haussiere|baissiere|laterale","force":"faible|moderee|forte","description":"..."}},"rsi":{{"valeur":{rsi:.2f},"zone":"survente|neutre|surachat","tendance":"montant|descendant|stable"}},"macd":{{"etat":"haussier|baissier|neutre","bougies_depuis":1}},"ma50":{{"position":"au-dessus|en-dessous|proche","condition":true}},"supports_resistances":{{"resistances":["R1: {sltp_base['tp']}","R2: niveau"],"supports":["S1: {sltp_base['sl']}","S2: niveau"]}},"sltp":{{"entree":"{sltp_base['entree']}","sl":"{sltp_base['sl']}","sl_pips":"{sltp_base['sl_pips']}","tp":"{sltp_base['tp']}","tp_pips":"{sltp_base['tp_pips']}","rr":"1:2","lot_micro":"{sltp_base['lot_micro']}"}},"forces":"...","faiblesses":"...","analyse":"3 phrases max","scenario_alternatif":"niveau invalidation","probabilite_signal":"{score}% justification"}}"""
+    prompt = (f"Analyste technique expert. Paire {pair} {TF_LABELS[tf]}.\n"
+              f"Signal déjà calculé: {signal} (score={score}/100)\n"
+              f"Close={close:.2f} RSI={rsi:.2f} MACD={macd_col} {macd_dir} "
+              f"MA50={ma50:.2f} Prix={'AU-DESSUS' if above else 'EN-DESSOUS'} MA50\n"
+              f"{xau_r}\n\n"
+              f"Complète UNIQUEMENT les champs textuels et affine les niveaux SL/TP si nécessaire.\n"
+              f'Garde signal="{signal}" et score proche de {score}.\n'
+              f"JSON UNIQUEMENT sans markdown:\n"
+              f'{{"signal":"{signal}","score":{score},"confiance":{{"niveau":"faible|moyen|eleve","raison":"..."}},'
+              f'"tendance":{{"direction":"haussiere|baissiere|laterale","force":"faible|moderee|forte","description":"..."}},'
+              f'"rsi":{{"valeur":{rsi:.2f},"zone":"survente|neutre|surachat","tendance":"montant|descendant|stable"}},'
+              f'"macd":{{"etat":"haussier|baissier|neutre","bougies_depuis":1}},'
+              f'"ma50":{{"position":"au-dessus|en-dessous|proche","condition":true}},'
+              f'"supports_resistances":{{"resistances":["R1: {sltp_base["tp"]}","R2: niveau"],"supports":["S1: {sltp_base["sl"]}","S2: niveau"]}},'
+              f'"sltp":{{"entree":"{sltp_base["entree"]}","sl":"{sltp_base["sl"]}","sl_pips":"{sltp_base["sl_pips"]}",'
+              f'"tp":"{sltp_base["tp"]}","tp_pips":"{sltp_base["tp_pips"]}","rr":"1:2","lot_micro":"{sltp_base["lot_micro"]}"}},'
+              f'"forces":"...","faiblesses":"...","analyse":"3 phrases max",'
+              f'"scenario_alternatif":"niveau invalidation","probabilite_signal":"{score}% justification"}}')
 
     payload = {"model": MODEL, "max_tokens": 800,
                "messages": [{"role": "user", "content": [
@@ -351,10 +508,8 @@ JSON UNIQUEMENT sans markdown:
             clean = raw.replace("```json","").replace("```","").strip()
             m     = re.search(r'\{[\s\S]*\}', clean)
             groq_result = json.loads(m.group(0) if m else clean)
-            # Forcer le signal et score Python — Groq ne peut pas les changer
             groq_result["signal"] = signal
             groq_result["score"]  = score
-            # Garder sltp Python si Groq retourne des valeurs invalides
             if not groq_result.get("sltp",{}).get("entree"):
                 groq_result["sltp"] = sltp_base
             print(f"    Groq enrichissement OK")
@@ -367,25 +522,24 @@ JSON UNIQUEMENT sans markdown:
     print(f"    Groq indisponible — résultat Python utilisé")
     return base_result
 
+# ──────────────────────────────────────────────────────────────
+#  CONSENSUS
+# ──────────────────────────────────────────────────────────────
 def evaluate_consensus(results):
     r15=results.get("15m",{});r1=results.get("1h",{});r4=results.get("4h",{})
     s15=r15.get("signal","WAIT");s1=r1.get("signal","WAIT");s4=r4.get("signal","WAIT")
     sc1=int(r1.get("score",0));sc4=int(r4.get("score",0))
     print(f"  M15={s15} | H1={s1}({sc1}) | H4={s4}({sc4}) | MIN_SCORE={MIN_SCORE}")
 
-    # Signal FORT : H1+H4 alignés ET les deux >= MIN_SCORE
     if s1==s4 and s1 in ("BUY","SELL") and sc1>=MIN_SCORE and sc4>=MIN_SCORE:
         print(f"  ✅ Signal FORT : H1={sc1} H4={sc4} >= {MIN_SCORE}")
         return {"signal":s1,"score_h1":sc1,"score_h4":sc4,
-                "m15_ok":s15==s1,"partial":False,
-                "r15":r15,"r1":r1,"r4":r4}
+                "m15_ok":s15==s1,"partial":False,"r15":r15,"r1":r1,"r4":r4}
 
-    # Signal PARTIEL : H1 fort (>=MIN_SCORE+10) mais H4 en WAIT
     if s1 in ("BUY","SELL") and s4 in ("WAIT",s1) and sc1>=MIN_SCORE+10:
         print(f"  ⚠️ Signal PARTIEL : H1={sc1}>={MIN_SCORE+10} H4={sc4} en WAIT")
         return {"signal":s1,"score_h1":sc1,"score_h4":sc4,
-                "m15_ok":s15==s1,"partial":True,
-                "r15":r15,"r1":r1,"r4":r4}
+                "m15_ok":s15==s1,"partial":True,"r15":r15,"r1":r1,"r4":r4}
 
     if s1 not in ("BUY","SELL"):
         print(f"  ❌ Pas de signal : H1={s1} — pas de direction claire")
@@ -397,6 +551,9 @@ def evaluate_consensus(results):
         print(f"  ❌ Pas de signal : H4 score={sc4} < {MIN_SCORE}")
     return None
 
+# ──────────────────────────────────────────────────────────────
+#  EMAIL
+# ──────────────────────────────────────────────────────────────
 def build_email(consensus,charts,pair):
     sig=consensus["signal"];r1=consensus["r1"];r4=consensus["r4"];r15=consensus["r15"]
     sc1=consensus["score_h1"];sc4=consensus["score_h4"]
@@ -422,21 +579,16 @@ def build_email(consensus,charts,pair):
 body{{margin:0;padding:0;background:#f1f5f9;font-family:'Segoe UI',Arial,sans-serif;}}
 .wrap{{max-width:660px;margin:20px auto;background:#fff;border-radius:16px;overflow:hidden;box-shadow:0 4px 24px rgba(0,0,0,.10);}}
 .header{{background:{col};padding:26px 28px 18px;color:#fff;}}
-.h-sig{{font-size:2.1rem;font-weight:900;}}
-.h-sub{{font-size:.88rem;opacity:.88;margin-top:4px;}}
-.h-date{{font-size:.72rem;opacity:.65;margin-top:5px;}}
-.body{{padding:22px 28px;}}
+.h-sig{{font-size:2.1rem;font-weight:900;}}.h-sub{{font-size:.88rem;opacity:.88;margin-top:4px;}}
+.h-date{{font-size:.72rem;opacity:.65;margin-top:5px;}}.body{{padding:22px 28px;}}
 .kpi-row{{display:flex;gap:10px;margin-bottom:16px;}}
 .kpi{{flex:1;background:#f8fafc;border-radius:10px;padding:12px;border:1.5px solid #e2e8f0;text-align:center;}}
 .kpi-lbl{{font-size:.62rem;color:#64748b;text-transform:uppercase;margin-bottom:3px;}}
-.kpi-val{{font-size:1.1rem;font-weight:800;color:#1e293b;}}
-.kpi-sub{{font-size:.62rem;color:#94a3b8;margin-top:2px;}}
+.kpi-val{{font-size:1.1rem;font-weight:800;color:#1e293b;}}.kpi-sub{{font-size:.62rem;color:#94a3b8;margin-top:2px;}}
 .k-sl .kpi-val{{color:#DC2626;}}.k-tp .kpi-val{{color:#16a34a;}}.k-rr .kpi-val{{color:#7c3aed;}}
 .sec{{font-size:.68rem;font-weight:700;color:#64748b;text-transform:uppercase;letter-spacing:.1em;margin:14px 0 7px;border-bottom:1px solid #e2e8f0;padding-bottom:4px;}}
-.sbar{{display:flex;align-items:center;gap:8px;margin-bottom:5px;}}
-.slbl{{font-size:.68rem;color:#64748b;width:32px;}}
-.bbg{{flex:1;height:7px;background:#f1f5f9;border-radius:4px;overflow:hidden;}}
-.bf{{height:100%;border-radius:4px;}}
+.sbar{{display:flex;align-items:center;gap:8px;margin-bottom:5px;}}.slbl{{font-size:.68rem;color:#64748b;width:32px;}}
+.bbg{{flex:1;height:7px;background:#f1f5f9;border-radius:4px;overflow:hidden;}}.bf{{height:100%;border-radius:4px;}}
 .snum{{font-size:.68rem;font-weight:700;color:#1e293b;width:42px;text-align:right;}}
 .al{{padding:11px 13px;border-radius:8px;font-size:.76rem;line-height:1.6;margin-bottom:9px;}}
 .ai{{background:#eff6ff;border:1px solid #93c5fd;color:#1e40af;}}
@@ -528,6 +680,9 @@ def send_email(msg):
         s.send_message(msg)
     print("  Email envoye!")
 
+# ──────────────────────────────────────────────────────────────
+#  ANALYSE PAIRE
+# ──────────────────────────────────────────────────────────────
 def analyze_pair(pair,state):
     print(f"\n{'='*55}\n  PAIRE: {pair}\n{'='*55}")
     results={};sltp_h1={}
@@ -555,8 +710,7 @@ def analyze_pair(pair,state):
     try:
         hist_bt, _ = perf_engine._read_history(GH_TOKEN, GH_REPO)
         wr_bt, nb_bt, reco_bt = perf_engine.mini_backtest(
-            pair.replace("/",""), sig, consensus["score_h1"], hist_bt
-        )
+            pair.replace("/",""), sig, consensus["score_h1"], hist_bt)
         if reco_bt == "SKIP":
             print(f"  [perf] ❌ Backtest défavorable (WR={wr_bt}% sur {nb_bt} trades) — signal bloqué")
             return state, False
@@ -585,20 +739,24 @@ def analyze_pair(pair,state):
     except Exception as e:print(f"  Erreur email: {e}");traceback.print_exc()
     return state,True
 
+# ──────────────────────────────────────────────────────────────
+#  EMAIL DE TEST
+# ──────────────────────────────────────────────────────────────
 def send_test_email():
     print("\n  MODE TEST EMAIL — envoi d un email de test...")
     msg = MIMEMultipart("alternative")
     msg["Subject"] = "✅ [TEST] ChartAnalyzer Scanner — Email OK"
     msg["From"]    = EMAIL_FROM
     msg["To"]      = EMAIL_TO
-    html = """<!DOCTYPE html><html><body style="font-family:Arial;padding:20px;background:#f1f5f9">
+    html = ("""<!DOCTYPE html><html><body style="font-family:Arial;padding:20px;background:#f1f5f9">
 <div style="max-width:500px;margin:auto;background:#fff;border-radius:12px;padding:24px;box-shadow:0 2px 12px rgba(0,0,0,.1)">
 <h2 style="color:#16a34a">✅ Email de test reçu !</h2>
 <p>Ton scanner ChartAnalyzer est correctement configuré.</p>
 <p>Les prochains emails de signaux BUY/SELL seront envoyés ici.</p>
 <hr style="border:1px solid #e2e8f0;margin:16px 0">
-<p style="color:#64748b;font-size:12px">ChartAnalyzer Scanner v2 — Test envoyé le """ + datetime.now(timezone.utc).strftime("%d/%m/%Y %H:%M UTC") + """</p>
-</div></body></html>"""
+<p style="color:#64748b;font-size:12px">ChartAnalyzer Scanner v2 — Test envoyé le """
+             + datetime.now(timezone.utc).strftime("%d/%m/%Y %H:%M UTC")
+             + """</p></div></body></html>""")
     msg.attach(MIMEText(html, "html", "utf-8"))
     try:
         send_email(msg)
@@ -607,13 +765,16 @@ def send_test_email():
         print(f"  ❌ Erreur email : {e}")
         traceback.print_exc()
 
+# ──────────────────────────────────────────────────────────────
+#  MAIN
+# ──────────────────────────────────────────────────────────────
 def main():
     print(f"\n{'='*55}\n  ChartAnalyzer Scanner v2\n  {datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M:%S')} UTC\n{'='*55}")
-    missing=[k for k,v in [("GROQ_KEY",GROQ_KEY),("EMAIL_FROM",EMAIL_FROM),("EMAIL_PASS",EMAIL_PASS),("EMAIL_TO",EMAIL_TO)] if not v]
+    missing=[k for k,v in [("GROQ_KEY",GROQ_KEY),("EMAIL_FROM",EMAIL_FROM),
+                             ("EMAIL_PASS",EMAIL_PASS),("EMAIL_TO",EMAIL_TO)] if not v]
     if missing:print(f"Variables manquantes: {', '.join(missing)}");sys.exit(1)
     if TEST_EMAIL:
-        send_test_email()
-        sys.exit(0)
+        send_test_email();sys.exit(0)
     if not is_market_open():print("Marche ferme");sys.exit(0)
     print(f"Paires: {', '.join(PAIRS)} | Score min: {MIN_SCORE} | Capital: {BALANCE}EUR")
     print(f"Anti-spam: {'actif' if GH_TOKEN else 'inactif'}")
@@ -632,59 +793,3 @@ def main():
 
 if __name__=="__main__":
     main()
-
-def write_signal_json(consensus: dict, pair: str):
-    if not GH_TOKEN or not GH_REPO:
-        print("  ⚠ GITHUB_TOKEN manquant — signal.json non écrit")
-        return
-    sig   = consensus["signal"]
-    r1    = consensus["r1"]
-    sltp  = r1.get("sltp", {})
-    now   = datetime.now(timezone.utc)
-    pair_mt5 = pair.replace("/", "")
-    signal = {
-        "id":         now.strftime("%Y%m%d_%H%M%S") + "_" + pair_mt5 + "_" + sig,
-        "pair":       pair_mt5,
-        "action":     sig,
-        "entry":      sltp.get("entree",    "0"),
-        "sl":         sltp.get("sl",        "0"),
-        "tp":         sltp.get("tp",        "0"),
-        "sl_pips":    sltp.get("sl_pips",   "0"),
-        "tp_pips":    sltp.get("tp_pips",   "0"),
-        "lot":        float(sltp.get("lot_micro", "0.01") or "0.01"),
-        "rr":         sltp.get("rr",        "1:2"),
-        "score_h1":   consensus["score_h1"],
-        "score_h4":   consensus["score_h4"],
-        "m15_ok":     consensus["m15_ok"],
-        "partial":    consensus["partial"],
-        "created_at": now.strftime("%Y-%m-%dT%H:%M:%SZ"),
-        "expires_at": (now + timedelta(hours=4)).strftime("%Y-%m-%dT%H:%M:%SZ"),
-        "status":     "pending"
-    }
-    url     = f"https://api.github.com/repos/{GH_REPO}/contents/signal.json"
-    headers = {
-        "Authorization": f"token {GH_TOKEN}",
-        "Accept":        "application/vnd.github.v3+json"
-    }
-    sha = None
-    try:
-        r = requests.get(url, headers=headers, timeout=10)
-        if r.status_code == 200:
-            sha = r.json().get("sha")
-    except Exception:
-        pass
-    content = base64.b64encode(json.dumps(signal, indent=2).encode()).decode()
-    body    = {
-        "message": f"[signal] {sig} {pair} {now.strftime('%H:%M')} UTC",
-        "content": content
-    }
-    if sha:
-        body["sha"] = sha
-    try:
-        r = requests.put(url, headers=headers, json=body, timeout=10)
-        if r.status_code in (200, 201):
-            print(f"  ✅ signal.json écrit dans GitHub ({sig} {pair})")
-        else:
-            print(f"  ❌ Erreur écriture signal.json : {r.status_code} {r.text[:100]}")
-    except Exception as e:
-        print(f"  ❌ Exception signal.json : {e}")
