@@ -1,0 +1,21 @@
+[
+  {
+    "date": "2026-06-10",
+    "time": "20:31",
+    "created_at": "2026-06-10T20:31:55Z",
+    "pair": "XAUEUR",
+    "signal": "SELL",
+    "score_h1": 60,
+    "score_h4": 60,
+    "partial": false,
+    "entry": 3551.22,
+    "sl": 3566.22,
+    "tp": 3521.22,
+    "lot": 0.01,
+    "rr": "1:2",
+    "result": "pending",
+    "backtest_wr": null,
+    "backtest_n": 0,
+    "backtest_reco": "NO_DATA"
+  }
+]
