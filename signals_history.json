@@ -57,5 +57,24 @@
     "backtest_wr": null,
     "backtest_n": 1,
     "backtest_reco": "NO_DATA"
+  },
+  {
+    "date": "2026-06-19",
+    "time": "11:21",
+    "created_at": "2026-06-19T11:21:25Z",
+    "pair": "XAUUSD",
+    "signal": "SELL",
+    "score_h1": 60,
+    "score_h4": 60,
+    "partial": false,
+    "entry": 4167.5,
+    "sl": 4182.5,
+    "tp": 4137.5,
+    "lot": 0.01,
+    "rr": "1:2",
+    "result": "pending",
+    "backtest_wr": null,
+    "backtest_n": 1,
+    "backtest_reco": "NO_DATA"
   }
 ]
