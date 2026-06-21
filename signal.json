@@ -1,10 +1,10 @@
 {
-  "id": "20260619_112124_XAUUSD_SELL",
-  "pair": "XAUUSD",
+  "id": "20260621_230305_XAUEUR_SELL",
+  "pair": "XAUEUR",
   "action": "SELL",
-  "entry": 4167.5,
-  "sl": 4182.5,
-  "tp": 4137.5,
+  "entry": 3641.14,
+  "sl": 3656.14,
+  "tp": 3611.14,
   "sl_pips": 15,
   "tp_pips": 30,
   "lot": 0.01,
@@ -13,7 +13,7 @@
   "score_h4": 60,
   "m15_ok": true,
   "partial": false,
-  "created_at": "2026-06-19T11:21:24Z",
-  "expires_at": "2026-06-19T15:21:24Z",
+  "created_at": "2026-06-21T23:03:05Z",
+  "expires_at": "2026-06-22T03:03:05Z",
   "status": "pending"
 }
