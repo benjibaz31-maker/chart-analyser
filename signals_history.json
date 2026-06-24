@@ -96,5 +96,24 @@
     "backtest_n": 1,
     "backtest_reco": "NO_DATA",
     "result_checked": "2026-06-22T12:49:15Z"
+  },
+  {
+    "date": "2026-06-24",
+    "time": "16:19",
+    "created_at": "2026-06-24T16:19:57Z",
+    "pair": "XAUEUR",
+    "signal": "SELL",
+    "score_h1": 60,
+    "score_h4": 60,
+    "partial": false,
+    "entry": 3535.51,
+    "sl": 3545.51,
+    "tp": 3520.0,
+    "lot": 0.01,
+    "rr": "1:1.5",
+    "result": "pending",
+    "backtest_wr": null,
+    "backtest_n": 2,
+    "backtest_reco": "NO_DATA"
   }
 ]
