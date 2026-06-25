@@ -111,9 +111,10 @@
     "tp": 3520.0,
     "lot": 0.01,
     "rr": "1:1.5",
-    "result": "pending",
+    "result": "SL",
     "backtest_wr": null,
     "backtest_n": 2,
-    "backtest_reco": "NO_DATA"
+    "backtest_reco": "NO_DATA",
+    "result_checked": "2026-06-25T10:15:42Z"
   }
 ]
