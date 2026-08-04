@@ -1,10 +1,10 @@
 {
-  "XAU/USD_2026-07-08": {
-    "signal": "SELL",
-    "sent_at": "16:06 UTC"
+  "XAU/EUR_2026-08-04": {
+    "signal": "BUY",
+    "sent_at": "17:46 UTC"
   },
-  "XAU/USD_2026-07-17": {
-    "signal": "SELL",
-    "sent_at": "19:04 UTC"
+  "XAU/USD_2026-08-04": {
+    "signal": "BUY",
+    "sent_at": "17:46 UTC"
   }
 }
