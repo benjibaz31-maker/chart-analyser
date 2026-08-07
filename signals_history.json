@@ -230,10 +230,11 @@
     "tp": "3827.65",
     "lot": "0.01",
     "rr": "1:2",
-    "result": "pending",
+    "result": "TP",
     "backtest_wr": null,
     "backtest_n": 1,
-    "backtest_reco": "NO_DATA"
+    "backtest_reco": "NO_DATA",
+    "result_checked": "2026-08-07T19:51:49Z"
   },
   {
     "date": "2026-08-07",
@@ -249,9 +250,10 @@
     "tp": "4408.5",
     "lot": "0.01",
     "rr": "1:2",
-    "result": "pending",
+    "result": "SL",
     "backtest_wr": null,
     "backtest_n": 1,
-    "backtest_reco": "NO_DATA"
+    "backtest_reco": "NO_DATA",
+    "result_checked": "2026-08-07T19:51:49Z"
   }
 ]
