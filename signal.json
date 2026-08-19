@@ -1,10 +1,10 @@
 {
-  "id": "20260812_081519_XAUEUR_BUY",
+  "id": "20260819_143047_XAUEUR_BUY",
   "pair": "XAUEUR",
   "action": "BUY",
-  "entry": "3871.8",
-  "sl": "3856.8",
-  "tp": "3901.8",
+  "entry": "3882.63",
+  "sl": "3867.63",
+  "tp": "3912.63",
   "sl_pips": "15",
   "tp_pips": "30",
   "lot": 0.01,
@@ -13,7 +13,7 @@
   "score_h4": 55,
   "m15_ok": true,
   "partial": false,
-  "created_at": "2026-08-12T08:15:19Z",
-  "expires_at": "2026-08-12T12:15:19Z",
+  "created_at": "2026-08-19T14:30:47Z",
+  "expires_at": "2026-08-19T18:30:47Z",
   "status": "pending"
 }
