@@ -370,9 +370,10 @@
     "tp": "3993.5",
     "lot": "0.01",
     "rr": "1:2",
-    "result": "pending",
+    "result": "TP",
     "backtest_wr": 100,
     "backtest_n": 6,
-    "backtest_reco": "GO"
+    "backtest_reco": "GO",
+    "result_checked": "2026-08-21T17:26:21Z"
   }
 ]
