@@ -355,5 +355,24 @@
     "backtest_n": 5,
     "backtest_reco": "GO",
     "result_checked": "2026-08-21T07:40:33Z"
+  },
+  {
+    "date": "2026-08-21",
+    "time": "08:37",
+    "created_at": "2026-08-21T08:37:26Z",
+    "pair": "XAUEUR",
+    "signal": "BUY",
+    "score_h1": 60,
+    "score_h4": 60,
+    "partial": false,
+    "entry": "3963.5",
+    "sl": "3948.5",
+    "tp": "3993.5",
+    "lot": "0.01",
+    "rr": "1:2",
+    "result": "pending",
+    "backtest_wr": 100,
+    "backtest_n": 6,
+    "backtest_reco": "GO"
   }
 ]
