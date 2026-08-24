@@ -1,12 +1,4 @@
 {
-  "XAU/EUR_2026-08-07": {
-    "signal": "BUY",
-    "sent_at": "10:59 UTC"
-  },
-  "XAU/USD_2026-08-07": {
-    "signal": "BUY",
-    "sent_at": "10:59 UTC"
-  },
   "XAU/EUR_2026-08-10": {
     "signal": "BUY",
     "sent_at": "19:54 UTC"
@@ -30,5 +22,9 @@
   "XAU/EUR_2026-08-21": {
     "signal": "BUY",
     "sent_at": "08:37 UTC"
+  },
+  "XAU/EUR_2026-08-24": {
+    "signal": "BUY",
+    "sent_at": "14:38 UTC"
   }
 }
