@@ -1,14 +1,14 @@
 {
-  "win_rate": 62,
-  "total_resolved": 16,
-  "tp": 10,
+  "win_rate": 65,
+  "total_resolved": 17,
+  "tp": 11,
   "sl": 6,
-  "pnl_simule": 140,
+  "pnl_simule": 160,
   "avg_score_tp": 60,
   "avg_score_sl": 60,
   "worst_pair": "XAUEUR",
   "worst_hour": 16,
   "recommended_min_score": null,
   "current_min_score": 55,
-  "updated_at": "2026-08-24T21:26:08Z"
+  "updated_at": "2026-08-25T07:41:57Z"
 }
