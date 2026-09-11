@@ -1,14 +1,14 @@
 {
-  "win_rate": 61,
-  "total_resolved": 18,
+  "win_rate": 58,
+  "total_resolved": 19,
   "tp": 11,
-  "sl": 7,
-  "pnl_simule": 150,
+  "sl": 8,
+  "pnl_simule": 140,
   "avg_score_tp": 60,
   "avg_score_sl": 60,
   "worst_pair": "XAUUSD",
   "worst_hour": 16,
   "recommended_min_score": null,
   "current_min_score": 55,
-  "updated_at": "2026-09-10T22:15:29Z"
+  "updated_at": "2026-09-11T12:02:02Z"
 }
